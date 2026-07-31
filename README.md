@@ -117,6 +117,51 @@ make verify
 This runs the CLI, transaction, action-adapter, metadata,
 and repository-invariant tests without GitHub credentials.
 
+## Claude Code
+
+After public launch, install the pinned standalone skill
+without authentication:
+
+```sh
+release=v0.1.0
+archive="$(mktemp -d)"
+target="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/auto-lint-pr"
+install -d "$target"
+curl --fail --location \
+  "https://github.com/trycopilotai/auto-lint-pr/archive/refs/tags/$release.tar.gz" \
+  >"$archive/auto-lint-pr.tar.gz"
+tar -xzf "$archive/auto-lint-pr.tar.gz" \
+  --strip-components=1 \
+  -C "$target"
+cp "$target/skills/auto-lint-pr/SKILL.md" \
+  "$target/SKILL.md"
+```
+
+The standalone invocation is `/auto-lint-pr`. A Claude
+marketplace distribution uses `/auto-lint-pr:auto-lint-pr`.
+
+## Codex
+
+After public launch, install the same pinned skill into the
+Codex skill store without authentication:
+
+```sh
+release=v0.1.0
+archive="$(mktemp -d)"
+target="${CODEX_HOME:-$HOME/.codex}/skills/auto-lint-pr"
+install -d "$target"
+curl --fail --location \
+  "https://github.com/trycopilotai/auto-lint-pr/archive/refs/tags/$release.tar.gz" \
+  >"$archive/auto-lint-pr.tar.gz"
+tar -xzf "$archive/auto-lint-pr.tar.gz" \
+  --strip-components=1 \
+  -C "$target"
+cp "$target/skills/auto-lint-pr/SKILL.md" \
+  "$target/SKILL.md"
+```
+
+Invoke it as `$auto-lint-pr`.
+
 ## License
 
 MIT

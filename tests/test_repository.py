@@ -62,5 +62,16 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertGreater(matches, 0)
 
 
+class InstallMetadataTest(unittest.TestCase):
+    def test_product_installs_pin_the_release_tag(self) -> None:
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertEqual(text.count("release=v0.1.0"), 2)
+        self.assertIn(
+            "/auto-lint-pr/archive/refs/tags/$release.tar.gz",
+            text,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
