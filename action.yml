@@ -4,7 +4,9 @@ description:
   request"
 inputs:
   token:
-    description: "Token used only by the publish step"
+    description:
+      "Repository-scoped Actions token used only by the
+      publish step"
     required: true
   lint-root:
     description:

@@ -171,6 +171,15 @@ def verify_actions(files: list[Path]) -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in workflows)
     if LINT_COMMIT not in combined:
         raise ValueError("workflows do not pin the lint release commit")
+    reusable = (ROOT / ".github" / "workflows" / "auto-lint-pr.yml").read_text(
+        encoding="utf-8"
+    )
+    if "secrets.checkout_token" not in reusable:
+        raise ValueError("reusable workflow has no private checkout token")
+    if 'token: "${{ github.token }}"' not in reusable:
+        raise ValueError("publication does not use the repository token")
+    if "secrets.token" in reusable:
+        raise ValueError("one credential cannot serve checkout and publication")
 
 
 def verify_action_boundary() -> None:

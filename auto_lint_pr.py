@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -16,8 +18,8 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "lint-release-manifest.json"
-BOT_NAME = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
+BOT_LOGIN = "github-actions[bot]"
 TOKEN_NAMES = (
     "GITHUB_TOKEN",
     "GH_TOKEN",
@@ -123,6 +125,15 @@ def token_free_environment(
     return isolated
 
 
+def refuse_pull_request_target(
+    environment: Mapping[str, str],
+) -> None:
+    """Refuse a caller that can execute unreviewed base-repository code."""
+
+    if environment.get("GITHUB_EVENT_NAME") == "pull_request_target":
+        raise SafetyError("pull_request_target callers are not allowed")
+
+
 def branch_name(base: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
     if slug == "":
@@ -225,7 +236,13 @@ def verify_lint_release(
     expected_commit = source.get("commit")
     if not isinstance(expected_commit, str):
         raise DependencyError("lint release manifest is missing commit")
-    actual_commit = git(lint_root, "rev-parse", "HEAD").stdout.strip()
+    isolated = token_free_environment(os.environ)
+    actual_commit = git(
+        lint_root,
+        "rev-parse",
+        "HEAD",
+        environment=isolated,
+    ).stdout.strip()
     if actual_commit != expected_commit:
         raise DependencyError(
             f"lint checkout is {actual_commit}; expected {expected_commit}"
@@ -235,6 +252,7 @@ def verify_lint_release(
         "status",
         "--porcelain=v1",
         "--untracked-files=no",
+        environment=isolated,
     ).stdout
     if tracked != "":
         raise DependencyError("lint checkout has tracked modifications")
@@ -242,17 +260,24 @@ def verify_lint_release(
 
 
 def repository_root(cwd: Path) -> Path:
-    completed = git(cwd, "rev-parse", "--show-toplevel")
+    completed = git(
+        cwd,
+        "rev-parse",
+        "--show-toplevel",
+        environment=token_free_environment(os.environ),
+    )
     return Path(completed.stdout.strip()).resolve()
 
 
 def changed_paths(repository: Path) -> list[str]:
+    isolated = token_free_environment(os.environ)
     tracked = git(
         repository,
         "diff",
         "--name-only",
         "-z",
         "HEAD",
+        environment=isolated,
     ).stdout
     untracked = git(
         repository,
@@ -260,6 +285,7 @@ def changed_paths(repository: Path) -> list[str]:
         "--others",
         "--exclude-standard",
         "-z",
+        environment=isolated,
     ).stdout
     paths = set()
     for payload in (tracked, untracked):
@@ -273,16 +299,26 @@ def file_record(repository: Path, relative: str) -> dict[str, str]:
     path = repository / relative
     record = {"path": relative}
     if path.is_symlink():
-        target = os.readlink(path)
+        target = os.fsencode(os.readlink(path))
+        record["content"] = base64.b64encode(target).decode("ascii")
         record["kind"] = "symlink"
-        record["sha256"] = hashlib.sha256(target.encode("utf-8")).hexdigest()
+        record["mode"] = "120000"
+        record["sha256"] = hashlib.sha256(target).hexdigest()
         return record
     if path.is_file():
+        payload = path.read_bytes()
+        mode = "100644"
+        if path.stat().st_mode & 0o111:
+            mode = "100755"
+        record["content"] = base64.b64encode(payload).decode("ascii")
         record["kind"] = "file"
-        record["sha256"] = sha256(path)
+        record["mode"] = mode
+        record["sha256"] = hashlib.sha256(payload).hexdigest()
         return record
     if not path.exists():
+        record["content"] = ""
         record["kind"] = "deleted"
+        record["mode"] = ""
         record["sha256"] = ""
         return record
     raise SafetyError(f"changed path is not a file: {relative}")
@@ -290,6 +326,45 @@ def file_record(repository: Path, relative: str) -> dict[str, str]:
 
 def delta_records(repository: Path) -> list[dict[str, str]]:
     return [file_record(repository, relative) for relative in changed_paths(repository)]
+
+
+def publication_file_changes(
+    records: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    """Return immutable GraphQL changes from recorded prepare bytes."""
+
+    additions = []
+    deletions = []
+    for record in records:
+        path = record["path"]
+        if record["kind"] == "deleted":
+            deletions.append({"path": path})
+            continue
+        prepared_payload(record)
+        additions.append(
+            {
+                "contents": record["content"],
+                "path": path,
+            }
+        )
+    return {
+        "additions": additions,
+        "deletions": deletions,
+    }
+
+
+def prepared_payload(record: dict[str, str]) -> bytes:
+    """Decode and authenticate one prepared file payload."""
+
+    path = record.get("path", "<unknown>")
+    try:
+        payload = base64.b64decode(record["content"], validate=True)
+        expected = record["sha256"]
+    except (KeyError, TypeError, ValueError, binascii.Error) as error:
+        raise SafetyError(f"prepared content is invalid: {path}") from error
+    if hashlib.sha256(payload).hexdigest() != expected:
+        raise SafetyError(f"prepared content digest changed: {path}")
+    return payload
 
 
 def ensure_clean(repository: Path) -> None:
@@ -336,15 +411,22 @@ def run_checked(
 
 
 def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
+    refuse_pull_request_target(os.environ)
+    isolated = token_free_environment(os.environ)
     cwd = Path(arguments.cwd).resolve()
     repository = repository_root(cwd)
     ensure_clean(repository)
+    base_head = git(
+        repository,
+        "rev-parse",
+        "HEAD",
+        environment=isolated,
+    ).stdout.strip()
     lint_root = Path(arguments.lint_root).resolve()
     manifest = verify_lint_release(
         lint_root,
         Path(arguments.manifest).resolve(),
     )
-    isolated = token_free_environment(os.environ)
     run_checked(
         lint_command(arguments),
         cwd=repository,
@@ -357,10 +439,18 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
             environment=isolated,
             shell=True,
         )
+    current_head = git(
+        repository,
+        "rev-parse",
+        "HEAD",
+        environment=isolated,
+    ).stdout.strip()
+    if current_head != base_head:
+        raise SafetyError("base checkout changed during token-free preparation")
     records = delta_records(repository)
     state = {
         "base": arguments.base,
-        "base_head": git(repository, "rev-parse", "HEAD").stdout.strip(),
+        "base_head": base_head,
         "branch": branch_name(arguments.base),
         "changed": bool(records),
         "cwd": str(repository),
@@ -379,6 +469,7 @@ def select_existing_pull_request(
     pull_requests: list[dict[str, Any]],
     base: str,
     branch: str,
+    repository_name: str,
 ) -> dict[str, Any] | None:
     if not pull_requests:
         return None
@@ -395,22 +486,23 @@ def select_existing_pull_request(
     actual_head = head_record.get("ref")
     if actual_base != base or actual_head != branch:
         raise SafetyError("existing pull request does not match base and head")
+    head_repository = head_record.get("repo")
+    if not isinstance(head_repository, dict):
+        raise SafetyError("existing pull request has no head repository")
+    if head_repository.get("full_name") != repository_name:
+        raise SafetyError("existing pull request has the wrong head repository")
     return pull_request
 
 
-def require_bot_tip(email: str) -> None:
-    if email != BOT_EMAIL:
-        raise SafetyError("existing auto-lint branch tip is not bot-authored")
-
-
 def require_token() -> dict[str, str]:
-    environment = dict(os.environ)
-    token = environment.get("GH_TOKEN")
+    token = os.environ.get("GH_TOKEN")
     if token is None or token == "":
-        token = environment.get("GITHUB_TOKEN")
+        token = os.environ.get("GITHUB_TOKEN")
     if token is None or token == "":
         raise SafetyError("publish requires GH_TOKEN or GITHUB_TOKEN")
+    environment = token_free_environment(os.environ)
     environment["GH_TOKEN"] = token
+    environment["GH_HOST"] = "github.com"
     return environment
 
 
@@ -423,11 +515,18 @@ def normalize_repository(value: str) -> str:
 def gh_api(
     arguments: Sequence[str],
     environment: Mapping[str, str],
+    input_value: Any | None = None,
 ) -> Any:
+    command = ["gh", "api", *arguments]
+    input_text = None
+    if input_value is not None:
+        command.extend(["--input", "-"])
+        input_text = json.dumps(input_value, separators=(",", ":"))
     completed = subprocess.run(
-        ["gh", "api", *arguments],
+        command,
         check=False,
         env=environment,
+        input=input_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -442,45 +541,37 @@ def gh_api(
         raise CommandError("GitHub API returned invalid JSON") from error
 
 
-def authenticated_git(
-    repository: Path,
-    environment: Mapping[str, str],
-    *arguments: str,
-) -> subprocess.CompletedProcess[str]:
-    return git(
-        repository,
-        "-c",
-        "credential.helper=",
-        "-c",
-        "credential.helper=!gh auth git-credential",
-        *arguments,
-        environment=environment,
-    )
-
-
 def remote_tip(
-    repository: Path,
     repository_name: str,
     branch: str,
     environment: Mapping[str, str],
 ) -> str | None:
     repository_name = normalize_repository(repository_name)
-    url = f"https://github.com/{repository_name}.git"
-    completed = authenticated_git(
-        repository,
+    value = gh_api(
+        [
+            "--method",
+            "GET",
+            f"repos/{repository_name}/git/matching-refs/heads/{branch}",
+        ],
         environment,
-        "ls-remote",
-        "--heads",
-        url,
-        f"refs/heads/{branch}",
     )
-    output = completed.stdout.strip()
-    if output == "":
+    if not isinstance(value, list):
+        raise CommandError("remote branch query did not return a list")
+    exact = []
+    for record in value:
+        if record.get("ref") == f"refs/heads/{branch}":
+            exact.append(record)
+    if not exact:
         return None
-    fields = output.split()
-    if len(fields) != 2:
-        raise SafetyError("remote branch query returned an invalid record")
-    return fields[0]
+    if len(exact) != 1:
+        raise SafetyError("remote branch query returned duplicate refs")
+    object_record = exact[0].get("object")
+    if not isinstance(object_record, dict):
+        raise SafetyError("remote branch query has no object")
+    sha = object_record.get("sha")
+    if not isinstance(sha, str):
+        raise SafetyError("remote branch query has no commit")
+    return sha
 
 
 def open_pull_requests(
@@ -524,45 +615,371 @@ def require_matching_pull_tip(
         raise SafetyError("existing pull request head differs from branch tip")
 
 
-def commit_delta(
-    repository: Path,
-    parent: str,
-    message: str,
-) -> str:
-    git(repository, "add", "-A", "--", ".")
-    staged = git(
-        repository,
-        "diff",
-        "--cached",
-        "--name-only",
-        "-z",
-    ).stdout
-    staged_paths = sorted(value for value in staged.split("\0") if value)
-    if staged_paths != changed_paths(repository):
-        raise SafetyError("staged paths differ from the prepared delta")
-    tree = git(repository, "write-tree").stdout.strip()
-    parent_tree = git(repository, "rev-parse", f"{parent}^{{tree}}").stdout.strip()
-    if tree == parent_tree:
-        return parent
-    environment = dict(os.environ)
-    environment.update(
-        {
-            "GIT_AUTHOR_NAME": BOT_NAME,
-            "GIT_AUTHOR_EMAIL": BOT_EMAIL,
-            "GIT_COMMITTER_NAME": BOT_NAME,
-            "GIT_COMMITTER_EMAIL": BOT_EMAIL,
+def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
+    """Require every branch-only commit to be signed and bot-owned."""
+
+    if not commits:
+        raise SafetyError("existing auto-lint branch has no unique commits")
+    for record in commits:
+        author = record.get("author")
+        commit = record.get("commit")
+        if not isinstance(author, dict) or author.get("login") != BOT_LOGIN:
+            raise SafetyError("auto-lint branch has a non-bot author")
+        if not isinstance(commit, dict):
+            raise SafetyError("auto-lint branch commit metadata is missing")
+        raw_author = commit.get("author")
+        verification = commit.get("verification")
+        signature = record.get("github_signature")
+        if not isinstance(raw_author, dict):
+            raise SafetyError("auto-lint branch author metadata is missing")
+        if raw_author.get("email") != BOT_EMAIL:
+            raise SafetyError("auto-lint branch author email is not the bot")
+        if not isinstance(verification, dict):
+            raise SafetyError("auto-lint branch signature metadata is missing")
+        if verification.get("verified") is not True:
+            raise SafetyError("auto-lint branch commit is not verified")
+        if not isinstance(signature, dict):
+            raise SafetyError("auto-lint branch has no GitHub signature proof")
+        if signature.get("isValid") is not True:
+            raise SafetyError("auto-lint branch GitHub signature is invalid")
+        if signature.get("wasSignedByGitHub") is not True:
+            raise SafetyError("auto-lint branch was not signed by GitHub")
+
+
+def github_commit_signature(
+    repository_name: str,
+    oid: str,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    """Return GitHub-specific signature proof for one commit."""
+
+    owner, name = normalize_repository(repository_name).split("/", 1)
+    query = """\
+query($owner: String!, $name: String!, $oid: GitObjectID!) {
+  repository(owner: $owner, name: $name) {
+    object(oid: $oid) {
+      ... on Commit {
+        oid
+        signature {
+          isValid
+          wasSignedByGitHub
         }
+      }
+    }
+  }
+}
+"""
+    value = gh_api(
+        ["graphql"],
+        environment,
+        input_value={
+            "query": query,
+            "variables": {
+                "name": name,
+                "oid": oid,
+                "owner": owner,
+            },
+        },
     )
-    completed = git(
-        repository,
-        "commit-tree",
-        tree,
-        "-p",
-        parent,
-        environment=environment,
-        input_text=message + "\n",
+    if not isinstance(value, dict):
+        raise CommandError("signature query did not return an object")
+    data = value.get("data")
+    if not isinstance(data, dict):
+        raise CommandError("signature query has no data")
+    repository = data.get("repository")
+    if not isinstance(repository, dict):
+        raise CommandError("signature query has no repository")
+    commit = repository.get("object")
+    if not isinstance(commit, dict) or commit.get("oid") != oid:
+        raise CommandError("signature query has the wrong commit")
+    signature = commit.get("signature")
+    if not isinstance(signature, dict):
+        raise SafetyError("commit has no GitHub signature")
+    return signature
+
+
+def branch_commits(
+    repository_name: str,
+    base: str,
+    tip: str,
+    environment: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Return the bounded branch-only commit inventory."""
+
+    value = gh_api(
+        [
+            "--method",
+            "GET",
+            f"repos/{repository_name}/compare/{base}...{tip}" "?per_page=100&page=1",
+        ],
+        environment,
     )
-    return completed.stdout.strip()
+    if not isinstance(value, dict):
+        raise CommandError("branch comparison did not return an object")
+    commits = value.get("commits")
+    total = value.get("total_commits")
+    if not isinstance(commits, list) or not isinstance(total, int):
+        raise CommandError("branch comparison has invalid commit metadata")
+    if total != len(commits):
+        raise SafetyError("auto-lint branch exceeds the 100-commit audit bound")
+    for record in commits:
+        oid = record.get("sha")
+        if not isinstance(oid, str):
+            raise CommandError("branch comparison commit has no object ID")
+        record["github_signature"] = github_commit_signature(
+            repository_name,
+            oid,
+            environment,
+        )
+    validate_branch_commits(commits)
+    return commits
+
+
+def git_blob_object_id(payload: bytes) -> str:
+    """Return the SHA-1 object ID used by current GitHub repositories."""
+
+    header = f"blob {len(payload)}\0".encode("ascii")
+    return hashlib.sha1(header + payload, usedforsecurity=False).hexdigest()
+
+
+def remote_tree(
+    repository_name: str,
+    commit: str,
+    environment: Mapping[str, str],
+) -> dict[str, dict[str, str]]:
+    """Return one complete, untruncated remote commit tree."""
+
+    commit_value = gh_api(
+        [
+            "--method",
+            "GET",
+            f"repos/{repository_name}/git/commits/{commit}",
+        ],
+        environment,
+    )
+    if not isinstance(commit_value, dict):
+        raise CommandError("remote commit query did not return an object")
+    tree_record = commit_value.get("tree")
+    if not isinstance(tree_record, dict):
+        raise CommandError("remote commit has no tree")
+    tree_sha = tree_record.get("sha")
+    if not isinstance(tree_sha, str):
+        raise CommandError("remote commit tree has no object ID")
+    value = gh_api(
+        [
+            "--method",
+            "GET",
+            f"repos/{repository_name}/git/trees/{tree_sha}?recursive=1",
+        ],
+        environment,
+    )
+    if not isinstance(value, dict):
+        raise CommandError("remote tree query did not return an object")
+    if value.get("truncated") is True:
+        raise SafetyError("remote tree exceeds the GitHub audit bound")
+    entries = value.get("tree")
+    if not isinstance(entries, list):
+        raise CommandError("remote tree has no entries")
+    result = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise CommandError("remote tree entry is invalid")
+        entry_type = entry.get("type")
+        if entry_type not in {"blob", "commit"}:
+            continue
+        path = entry.get("path")
+        mode = entry.get("mode")
+        sha = entry.get("sha")
+        if not isinstance(path, str):
+            raise CommandError("remote tree entry has no path")
+        if not isinstance(mode, str) or not isinstance(sha, str):
+            raise CommandError("remote tree entry metadata is invalid")
+        if path in result:
+            raise SafetyError("remote tree contains a duplicate path")
+        result[path] = {
+            "mode": mode,
+            "sha": sha,
+            "type": entry_type,
+        }
+    return result
+
+
+def desired_tree_record(record: dict[str, str]) -> dict[str, str] | None:
+    """Return the expected remote record for one prepared path."""
+
+    if record["kind"] == "deleted":
+        return None
+    payload = prepared_payload(record)
+    return {
+        "mode": record["mode"],
+        "sha": git_blob_object_id(payload),
+        "type": "blob",
+    }
+
+
+def validate_base_tree(
+    base_tree: dict[str, dict[str, str]],
+    records: list[dict[str, str]],
+) -> None:
+    """Reject mode changes and unsupported new path kinds."""
+
+    for record in records:
+        path = record["path"]
+        current = base_tree.get(path)
+        desired = desired_tree_record(record)
+        if record["kind"] == "deleted":
+            if current is None:
+                raise SafetyError(f"prepared deletion is absent from base: {path}")
+            continue
+        if current is None:
+            if record["kind"] != "file" or record["mode"] != "100644":
+                raise SafetyError(f"new path has an unsupported mode: {path}")
+        else:
+            if current["type"] != "blob":
+                raise SafetyError(f"prepared path is not a blob in base: {path}")
+            if current["mode"] != record["mode"]:
+                raise SafetyError(f"prepared path changes file mode: {path}")
+        if current == desired:
+            raise SafetyError(f"prepared path does not change base content: {path}")
+
+
+def validate_existing_branch_tree(
+    base_tree: dict[str, dict[str, str]],
+    branch_tree: dict[str, dict[str, str]],
+    records: list[dict[str, str]],
+) -> bool:
+    """Require branch residue and the next commit to match prepared paths."""
+
+    changed = set()
+    for path in set(base_tree) | set(branch_tree):
+        if base_tree.get(path) != branch_tree.get(path):
+            changed.add(path)
+    prepared_paths = {record["path"] for record in records}
+    if changed != prepared_paths:
+        raise SafetyError("existing branch paths differ from the prepared delta")
+
+    matched = 0
+    for record in records:
+        desired = desired_tree_record(record)
+        if branch_tree.get(record["path"]) == desired:
+            matched += 1
+    if matched == len(records):
+        return True
+    if matched:
+        raise SafetyError("existing branch contains only part of the prepared delta")
+    return False
+
+
+def create_remote_branch(
+    repository_name: str,
+    branch: str,
+    base: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Create the exact temporary publication branch."""
+
+    gh_api(
+        [
+            "--method",
+            "POST",
+            f"repos/{repository_name}/git/refs",
+            "-f",
+            f"ref=refs/heads/{branch}",
+            "-f",
+            f"sha={base}",
+        ],
+        environment,
+    )
+
+
+def delete_remote_branch(
+    repository_name: str,
+    branch: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Delete only a just-created branch after mutation failure."""
+
+    gh_api(
+        [
+            "--method",
+            "DELETE",
+            f"repos/{repository_name}/git/refs/heads/{branch}",
+        ],
+        environment,
+    )
+
+
+def create_signed_commit(
+    repository_name: str,
+    branch: str,
+    expected_head: str,
+    records: list[dict[str, str]],
+    message: str,
+    environment: Mapping[str, str],
+) -> str:
+    """Atomically append a GitHub-signed commit with exact file changes."""
+
+    query = """\
+mutation($input: CreateCommitOnBranchInput!) {
+  createCommitOnBranch(input: $input) {
+    commit {
+      oid
+      signature {
+        isValid
+        wasSignedByGitHub
+      }
+    }
+    ref { target { oid } }
+  }
+}
+"""
+    variables = {
+        "input": {
+            "branch": {
+                "branchName": branch,
+                "repositoryNameWithOwner": repository_name,
+            },
+            "expectedHeadOid": expected_head,
+            "fileChanges": publication_file_changes(records),
+            "message": {"headline": message},
+        }
+    }
+    value = gh_api(
+        ["graphql"],
+        environment,
+        input_value={"query": query, "variables": variables},
+    )
+    if not isinstance(value, dict):
+        raise CommandError("commit mutation did not return an object")
+    data = value.get("data")
+    if not isinstance(data, dict):
+        raise CommandError("commit mutation has no data")
+    payload = data.get("createCommitOnBranch")
+    if not isinstance(payload, dict):
+        raise CommandError("commit mutation has no payload")
+    commit = payload.get("commit")
+    ref = payload.get("ref")
+    if not isinstance(commit, dict) or not isinstance(ref, dict):
+        raise CommandError("commit mutation result is incomplete")
+    oid = commit.get("oid")
+    target = ref.get("target")
+    if not isinstance(oid, str) or not isinstance(target, dict):
+        raise CommandError("commit mutation object IDs are invalid")
+    if target.get("oid") != oid:
+        raise SafetyError("commit mutation ref does not match its commit")
+    metadata = gh_api(
+        [
+            "--method",
+            "GET",
+            f"repos/{repository_name}/commits/{oid}",
+        ],
+        environment,
+    )
+    if not isinstance(metadata, dict):
+        raise CommandError("created commit metadata is invalid")
+    metadata["github_signature"] = commit.get("signature")
+    validate_branch_commits([metadata])
+    return oid
 
 
 def apply_labels_and_reviewers(
@@ -593,11 +1010,21 @@ def apply_labels_and_reviewers(
 
 
 def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
+    refuse_pull_request_target(os.environ)
+    isolated = token_free_environment(os.environ)
     state = load_json(Path(arguments.state).resolve())
     if state.get("schema") != 1:
         raise SafetyError("unsupported state schema")
     repository = Path(state["cwd"]).resolve()
-    if git(repository, "rev-parse", "HEAD").stdout.strip() != state["base_head"]:
+    if (
+        git(
+            repository,
+            "rev-parse",
+            "HEAD",
+            environment=isolated,
+        ).stdout.strip()
+        != state["base_head"]
+    ):
         raise SafetyError("base checkout changed after preparation")
     assert_delta(repository, state["delta"])
     if not state["changed"]:
@@ -613,15 +1040,29 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         raise SafetyError("publish requires --repository or GITHUB_REPOSITORY")
     repository_name = normalize_repository(repository_name)
     environment = require_token()
+    base_tip = remote_tip(
+        repository_name,
+        state["base"],
+        environment,
+    )
+    if base_tip != state["base_head"]:
+        raise SafetyError("remote base branch changed after preparation")
+    base_tree = remote_tree(
+        repository_name,
+        state["base_head"],
+        environment,
+    )
+    validate_base_tree(base_tree, state["delta"])
+
     branch = state["branch"]
     pulls = open_pull_requests(repository_name, branch, environment)
     pull_request = select_existing_pull_request(
         pulls,
         base=state["base"],
         branch=branch,
+        repository_name=repository_name,
     )
     tip = remote_tip(
-        repository,
         repository_name,
         branch,
         environment,
@@ -632,69 +1073,124 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         raise SafetyError("open auto-lint PR has no remote head branch")
     if pull_request is not None:
         require_matching_pull_tip(pull_request, tip)
-    parent = state["base_head"]
+
+    created_branch = False
+    expected_head = state["base_head"]
     if tip is not None:
-        url = f"https://github.com/{repository_name}.git"
-        authenticated_git(
-            repository,
+        branch_commits(
+            repository_name,
+            state["base_head"],
+            tip,
             environment,
-            "fetch",
-            "--no-tags",
-            url,
-            tip,
         )
-        fetched = git(repository, "rev-parse", "FETCH_HEAD").stdout.strip()
-        if fetched != tip:
-            raise SafetyError("fetched branch tip differs from remote query")
-        email = git(
-            repository,
-            "show",
-            "-s",
-            "--format=%ae",
-            tip,
-        ).stdout.strip()
-        require_bot_tip(email)
-        parent = tip
-    commit = commit_delta(
-        repository,
-        parent,
-        "Apply automated formatting",
-    )
-    if commit == parent and pull_request is not None:
-        result = {
-            "changed": False,
-            "pull_request": pull_request["number"],
-            "schema": 1,
-        }
-        write_action_output("changed", "false")
-        return result
-    url = f"https://github.com/{repository_name}.git"
-    authenticated_git(
-        repository,
-        environment,
-        "push",
-        url,
-        f"{commit}:refs/heads/{branch}",
-    )
+        branch_tree = remote_tree(repository_name, tip, environment)
+        if validate_existing_branch_tree(
+            base_tree,
+            branch_tree,
+            state["delta"],
+        ):
+            result = {
+                "changed": False,
+                "pull_request": pull_request["number"],
+                "schema": 1,
+            }
+            write_action_output("changed", "false")
+            return result
+        expected_head = tip
+    else:
+        create_remote_branch(
+            repository_name,
+            branch,
+            state["base_head"],
+            environment,
+        )
+        created_branch = True
+
+    try:
+        published_commit = create_signed_commit(
+            repository_name,
+            branch,
+            expected_head,
+            state["delta"],
+            "Apply automated formatting",
+            environment,
+        )
+        published_tree = remote_tree(
+            repository_name,
+            published_commit,
+            environment,
+        )
+        if not validate_existing_branch_tree(
+            base_tree,
+            published_tree,
+            state["delta"],
+        ):
+            raise SafetyError("published tree differs from the prepared delta")
+        published_tip = remote_tip(
+            repository_name,
+            branch,
+            environment,
+        )
+        if published_tip != published_commit:
+            raise SafetyError("published commit is not the branch tip")
+    except AutoLintError as error:
+        if created_branch:
+            try:
+                delete_remote_branch(
+                    repository_name,
+                    branch,
+                    environment,
+                )
+            except AutoLintError as cleanup_error:
+                raise SafetyError(
+                    "commit failed and the new branch cleanup also failed"
+                ) from cleanup_error
+        raise error
+
     if pull_request is None:
-        pull_request = gh_api(
-            [
-                "--method",
-                "POST",
-                f"repos/{repository_name}/pulls",
-                "-f",
-                f"title={arguments.title}",
-                "-f",
-                f"head={branch}",
-                "-f",
-                f"base={state['base']}",
-                "-f",
-                f"body={arguments.body}",
-            ],
-            environment,
-        )
+        try:
+            pull_request = gh_api(
+                [
+                    "--method",
+                    "POST",
+                    f"repos/{repository_name}/pulls",
+                    "-f",
+                    f"title={arguments.title}",
+                    "-f",
+                    f"head={branch}",
+                    "-f",
+                    f"base={state['base']}",
+                    "-f",
+                    f"body={arguments.body}",
+                ],
+                environment,
+            )
+        except AutoLintError as error:
+            if created_branch:
+                try:
+                    delete_remote_branch(
+                        repository_name,
+                        branch,
+                        environment,
+                    )
+                except AutoLintError as cleanup_error:
+                    raise SafetyError(
+                        "pull request creation failed and the new branch "
+                        "cleanup also failed"
+                    ) from cleanup_error
+            raise error
         if not isinstance(pull_request, dict):
             raise CommandError("pull request creation returned invalid data")
+        select_existing_pull_request(
+            [pull_request],
+            base=state["base"],
+            branch=branch,
+            repository_name=repository_name,
+        )
+        require_matching_pull_tip(
+            pull_request,
+            published_commit,
+        )
     number = pull_request.get("number")
     if not isinstance(number, int):
         raise CommandError("pull request response is missing its number")

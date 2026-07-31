@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -62,6 +64,14 @@ def commit_all(repository: Path, message: str = "fixture") -> str:
     run_git(repository, "add", "-A")
     run_git(repository, "commit", "-qm", message)
     return run_git(repository, "rev-parse", "HEAD")
+
+
+def blob_record(payload: bytes, mode: str = "100644") -> dict[str, str]:
+    return {
+        "mode": mode,
+        "sha": AUTO_LINT_PR.git_blob_object_id(payload),
+        "type": "blob",
+    }
 
 
 def write_lint_fixture(root: Path) -> Path:
@@ -243,7 +253,10 @@ class BranchSafetyTest(unittest.TestCase):
         pull_requests = [
             {
                 "base": {"ref": "main"},
-                "head": {"ref": "auto-lint/main"},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                },
                 "number": 12,
             }
         ]
@@ -252,6 +265,7 @@ class BranchSafetyTest(unittest.TestCase):
             pull_requests,
             base="main",
             branch="auto-lint/main",
+            repository_name="owner/repository",
         )
 
         self.assertEqual(12, selected["number"])
@@ -260,7 +274,10 @@ class BranchSafetyTest(unittest.TestCase):
         pull_requests = [
             {
                 "base": {"ref": "release"},
-                "head": {"ref": "auto-lint/main"},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                },
                 "number": 12,
             }
         ]
@@ -270,15 +287,45 @@ class BranchSafetyTest(unittest.TestCase):
                 pull_requests,
                 base="main",
                 branch="auto-lint/main",
+                repository_name="owner/repository",
             )
 
-    def test_non_bot_tip_is_rejected(self) -> None:
+    def test_existing_pull_request_head_repository_must_match(self) -> None:
+        pull_requests = [
+            {
+                "base": {"ref": "main"},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "other/repository"},
+                },
+                "number": 12,
+            }
+        ]
+
         with self.assertRaises(AUTO_LINT_PR.SafetyError):
-            AUTO_LINT_PR.require_bot_tip(
-                "developer@example.invalid",
+            AUTO_LINT_PR.select_existing_pull_request(
+                pull_requests,
+                base="main",
+                branch="auto-lint/main",
+                repository_name="owner/repository",
             )
 
-        AUTO_LINT_PR.require_bot_tip(AUTO_LINT_PR.BOT_EMAIL)
+    def test_bot_email_without_a_valid_signature_is_rejected(self) -> None:
+        unsigned = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "verification": {"verified": False},
+            },
+            "github_signature": {
+                "isValid": False,
+                "wasSignedByGitHub": True,
+            },
+            "sha": "unsigned",
+        }
+
+        with self.assertRaises(AUTO_LINT_PR.SafetyError):
+            AUTO_LINT_PR.validate_branch_commits([unsigned])
 
     def test_pull_request_tip_must_match_remote_tip(self) -> None:
         pull_request = {"head": {"sha": "expected"}}
@@ -290,6 +337,102 @@ class BranchSafetyTest(unittest.TestCase):
             AUTO_LINT_PR.require_matching_pull_tip(
                 pull_request,
                 "different",
+            )
+
+    def test_reused_branch_commits_must_be_signed_and_bot_owned(
+        self,
+    ) -> None:
+        bot = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "verification": {"verified": True},
+            },
+            "github_signature": {
+                "isValid": True,
+                "wasSignedByGitHub": True,
+            },
+            "sha": "bot",
+        }
+        unsigned = json.loads(json.dumps(bot))
+        unsigned["commit"]["verification"]["verified"] = False
+        signed_by_human = json.loads(json.dumps(bot))
+        signed_by_human["github_signature"]["wasSignedByGitHub"] = False
+        human = json.loads(json.dumps(bot))
+        human["author"]["login"] = "human"
+
+        AUTO_LINT_PR.validate_branch_commits([bot])
+        for commits in ([unsigned], [signed_by_human], [bot, human]):
+            with self.subTest(commits=commits):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                    AUTO_LINT_PR.validate_branch_commits(commits)
+
+    def test_signature_query_is_bound_to_repository_and_commit(
+        self,
+    ) -> None:
+        oid = "a" * 40
+        response = {
+            "data": {
+                "repository": {
+                    "object": {
+                        "oid": oid,
+                        "signature": {
+                            "isValid": True,
+                            "wasSignedByGitHub": True,
+                        },
+                    }
+                }
+            }
+        }
+        with mock.patch.object(
+            AUTO_LINT_PR,
+            "gh_api",
+            return_value=response,
+        ) as api:
+            signature = AUTO_LINT_PR.github_commit_signature(
+                "owner/repository",
+                oid,
+                {"GH_TOKEN": "token"},
+            )
+
+        self.assertTrue(signature["wasSignedByGitHub"])
+        request = api.call_args.kwargs["input_value"]
+        self.assertEqual(
+            {
+                "name": "repository",
+                "oid": oid,
+                "owner": "owner",
+            },
+            request["variables"],
+        )
+
+    def test_existing_branch_tree_must_only_change_prepared_paths(
+        self,
+    ) -> None:
+        base_tree = {
+            "one.txt": {"mode": "100644", "sha": "base-one"},
+            "two.txt": {"mode": "100644", "sha": "base-two"},
+        }
+        branch_tree = {
+            "one.txt": {"mode": "100644", "sha": "branch-one"},
+            "two.txt": {"mode": "100644", "sha": "branch-two"},
+        }
+        prepared_bytes = b"prepared\n"
+        prepared = [
+            {
+                "content": base64.b64encode(prepared_bytes).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "one.txt",
+                "sha256": hashlib.sha256(prepared_bytes).hexdigest(),
+            }
+        ]
+
+        with self.assertRaises(AUTO_LINT_PR.SafetyError):
+            AUTO_LINT_PR.validate_existing_branch_tree(
+                base_tree,
+                branch_tree,
+                prepared,
             )
 
 
@@ -441,6 +584,142 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
                 [record["path"] for record in result["delta"]],
             )
 
+    def test_prepare_rejects_a_hook_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lint_root = root / "lint"
+            manifest = write_lint_fixture(lint_root)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            (consumer / "sample.txt").write_text(
+                "needs-formatting\n",
+                encoding="utf-8",
+            )
+            commit_all(consumer)
+            hook = root / "hook.py"
+            hook.write_text(
+                """\
+import subprocess
+from pathlib import Path
+
+Path("hidden.txt").write_text("hidden\\n", encoding="utf-8")
+subprocess.run(["git", "add", "hidden.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "hidden"], check=True)
+""",
+                encoding="utf-8",
+            )
+            hook_command = " ".join(
+                [
+                    shlex.quote(sys.executable),
+                    shlex.quote(str(hook)),
+                ]
+            )
+            arguments = prepare_arguments(
+                consumer,
+                lint_root,
+                manifest,
+                root / "state.json",
+                ["--hook", hook_command],
+            )
+
+            with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                AUTO_LINT_PR.run_prepare(arguments)
+
+    def test_mode_mutation_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            commit_all(repository)
+            sample.write_text("prepared\n", encoding="utf-8")
+            expected = AUTO_LINT_PR.delta_records(repository)
+
+            sample.chmod(0o755)
+
+            with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                AUTO_LINT_PR.assert_delta(repository, expected)
+
+    def test_publication_uses_recorded_bytes_after_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            commit_all(repository)
+            sample.write_text("prepared\n", encoding="utf-8")
+            expected = AUTO_LINT_PR.delta_records(repository)
+
+            AUTO_LINT_PR.assert_delta(repository, expected)
+            sample.write_text("changed-after-check\n", encoding="utf-8")
+            changes = AUTO_LINT_PR.publication_file_changes(expected)
+
+            encoded = changes["additions"][0]["contents"]
+            self.assertEqual(b"prepared\n", base64.b64decode(encoded))
+
+    def test_publication_does_not_run_git_filters_with_token(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            capture = root / "captured.txt"
+            filter_script = root / "filter.py"
+            filter_script.write_text(
+                """\
+import os
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    os.environ.get("GH_TOKEN", "ABSENT"),
+    encoding="utf-8",
+)
+sys.stdout.buffer.write(sys.stdin.buffer.read())
+""",
+                encoding="utf-8",
+            )
+            (repository / ".gitattributes").write_text(
+                "sample.txt filter=probe\n",
+                encoding="utf-8",
+            )
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            commit_all(repository)
+            filter_command = " ".join(
+                [
+                    shlex.quote(sys.executable),
+                    shlex.quote(str(filter_script)),
+                    shlex.quote(str(capture)),
+                ]
+            )
+            run_git(
+                repository,
+                "config",
+                "filter.probe.clean",
+                filter_command,
+            )
+            run_git(
+                repository,
+                "config",
+                "filter.probe.required",
+                "true",
+            )
+            sample.write_text("prepared\n", encoding="utf-8")
+            expected = AUTO_LINT_PR.delta_records(repository)
+            self.assertEqual("ABSENT", capture.read_text(encoding="utf-8"))
+            capture.unlink()
+
+            with mock.patch.dict(
+                os.environ,
+                {"GH_TOKEN": "publish-secret"},
+                clear=False,
+            ):
+                AUTO_LINT_PR.publication_file_changes(expected)
+
+            self.assertFalse(capture.exists())
+
     def test_formatter_failure_stops_before_publish(self) -> None:
         with mock.patch.object(
             AUTO_LINT_PR,
@@ -459,7 +738,7 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
         self.assertEqual("formatter failed\n", error.getvalue())
         publish.assert_not_called()
 
-    def test_commit_contains_exact_working_tree_delta(self) -> None:
+    def test_publication_changes_contain_exact_prepared_delta(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
@@ -467,31 +746,93 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
             second = repository / "second.txt"
             first.write_text("before\n", encoding="utf-8")
             second.write_text("unchanged\n", encoding="utf-8")
-            parent = commit_all(repository)
+            commit_all(repository)
             first.write_text("after\n", encoding="utf-8")
 
-            commit = AUTO_LINT_PR.commit_delta(
-                repository,
-                parent,
+            records = AUTO_LINT_PR.delta_records(repository)
+            changes = AUTO_LINT_PR.publication_file_changes(records)
+
+            self.assertEqual(
+                ["first.txt"],
+                [record["path"] for record in changes["additions"]],
+            )
+            encoded = changes["additions"][0]["contents"]
+            self.assertEqual(b"after\n", base64.b64decode(encoded))
+
+    def test_invalid_prepared_payload_is_a_safety_error(self) -> None:
+        record = {
+            "content": "not-base64!",
+            "kind": "file",
+            "mode": "100644",
+            "path": "sample.txt",
+            "sha256": "0" * 64,
+        }
+
+        with self.assertRaises(AUTO_LINT_PR.SafetyError):
+            AUTO_LINT_PR.publication_file_changes([record])
+
+    def test_signed_commit_uses_exact_expected_head_and_bytes(self) -> None:
+        payload = b"prepared\n"
+        records = [
+            {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "sample.txt",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ]
+        oid = "b" * 40
+        signature = {
+            "isValid": True,
+            "wasSignedByGitHub": True,
+        }
+        mutation = {
+            "data": {
+                "createCommitOnBranch": {
+                    "commit": {
+                        "oid": oid,
+                        "signature": signature,
+                    },
+                    "ref": {"target": {"oid": oid}},
+                }
+            }
+        }
+        metadata = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "verification": {"verified": True},
+            },
+            "sha": oid,
+        }
+        with mock.patch.object(
+            AUTO_LINT_PR,
+            "gh_api",
+            side_effect=[mutation, metadata],
+        ) as api:
+            actual = AUTO_LINT_PR.create_signed_commit(
+                "owner/repository",
+                "auto-lint/main",
+                "a" * 40,
+                records,
                 "Apply automated formatting",
+                {"GH_TOKEN": "token"},
             )
 
-            changed = run_git(
-                repository,
-                "diff",
-                "--name-only",
-                parent,
-                commit,
-            )
-            author = run_git(
-                repository,
-                "show",
-                "-s",
-                "--format=%ae",
-                commit,
-            )
-            self.assertEqual("first.txt", changed)
-            self.assertEqual(AUTO_LINT_PR.BOT_EMAIL, author)
+        self.assertEqual(oid, actual)
+        mutation_input = api.call_args_list[0].kwargs["input_value"]
+        commit_input = mutation_input["variables"]["input"]
+        self.assertEqual("a" * 40, commit_input["expectedHeadOid"])
+        self.assertEqual(
+            {
+                "branchName": "auto-lint/main",
+                "repositoryNameWithOwner": "owner/repository",
+            },
+            commit_input["branch"],
+        )
+        encoded = commit_input["fileChanges"]["additions"][0]["contents"]
+        self.assertEqual(payload, base64.b64decode(encoded))
 
     def test_publish_no_change_does_not_require_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -534,6 +875,50 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
             self.assertFalse(result["changed"])
             self.assertIsNone(result["pull_request"])
 
+    def test_publish_refuses_pull_request_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            (repository / "sample.txt").write_text(
+                "formatted\n",
+                encoding="utf-8",
+            )
+            head = commit_all(repository)
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": False,
+                        "cwd": str(repository),
+                        "delta": [],
+                        "lint_commit": "pinned",
+                        "repository": "owner/repository",
+                        "schema": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--lint-root",
+                    "/unused",
+                    "--state",
+                    str(state_path),
+                ]
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_EVENT_NAME": "pull_request_target"},
+                clear=True,
+            ):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                    AUTO_LINT_PR.run_publish(arguments)
+
     def test_publish_creates_pull_request_for_exact_delta(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"
@@ -569,44 +954,143 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
                 ]
             )
             environment = {"GH_TOKEN": "token"}
-            push_result = subprocess.CompletedProcess(
-                args=[],
-                returncode=0,
-                stdout="",
-                stderr="",
-            )
-            with mock.patch.object(
-                AUTO_LINT_PR,
-                "require_token",
-                return_value=environment,
-            ):
-                with mock.patch.object(
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            published_tree = {"sample.txt": blob_record(b"after\n")}
+            pull_request = {
+                "base": {"ref": "main"},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                    "sha": "signed-commit",
+                },
+                "number": 17,
+            }
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value=environment,
+                ),
+                mock.patch.object(
                     AUTO_LINT_PR,
                     "open_pull_requests",
                     return_value=[],
-                ):
-                    with mock.patch.object(
-                        AUTO_LINT_PR,
-                        "remote_tip",
-                        return_value=None,
-                    ):
-                        with mock.patch.object(
-                            AUTO_LINT_PR,
-                            "authenticated_git",
-                            return_value=push_result,
-                        ) as authenticated:
-                            with mock.patch.object(
-                                AUTO_LINT_PR,
-                                "gh_api",
-                                return_value={"number": 17},
-                            ) as api:
-                                result = AUTO_LINT_PR.run_publish(arguments)
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, None, "signed-commit"],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, published_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_remote_branch",
+                ) as create_branch,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                    return_value="signed-commit",
+                ) as create_commit,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    return_value=pull_request,
+                ) as api,
+            ):
+                result = AUTO_LINT_PR.run_publish(arguments)
 
             self.assertTrue(result["changed"])
             self.assertEqual(17, result["pull_request"])
-            authenticated.assert_called_once()
+            create_branch.assert_called_once()
+            create_commit.assert_called_once()
             request = api.call_args.args[0]
             self.assertIn("repos/owner/repository/pulls", request)
+
+    def test_publish_cleans_new_branch_when_remote_tree_differs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8")
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": True,
+                        "cwd": str(repository),
+                        "delta": AUTO_LINT_PR.delta_records(repository),
+                        "lint_commit": "pinned",
+                        "repository": "owner/repository",
+                        "schema": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--lint-root",
+                    "/unused",
+                    "--state",
+                    str(state_path),
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            wrong_tree = {"sample.txt": blob_record(b"wrong\n")}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, None],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, wrong_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_remote_branch",
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                    return_value="signed-commit",
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "delete_remote_branch",
+                ) as delete_branch,
+            ):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                    AUTO_LINT_PR.run_publish(arguments)
+
+            delete_branch.assert_called_once_with(
+                "owner/repository",
+                "auto-lint/main",
+                {"GH_TOKEN": "token"},
+            )
 
     def test_publish_rejects_pull_request_tip_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -646,33 +1130,42 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
                 "base": {"ref": "main"},
                 "head": {
                     "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
                     "sha": "pull-tip",
                 },
                 "number": 4,
             }
-            with mock.patch.object(
-                AUTO_LINT_PR,
-                "require_token",
-                return_value={"GH_TOKEN": "token"},
-            ):
-                with mock.patch.object(
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
                     AUTO_LINT_PR,
                     "open_pull_requests",
                     return_value=[pull],
-                ):
-                    with mock.patch.object(
-                        AUTO_LINT_PR,
-                        "remote_tip",
-                        return_value="remote-tip",
-                    ):
-                        with mock.patch.object(
-                            AUTO_LINT_PR,
-                            "authenticated_git",
-                        ) as authenticated:
-                            with self.assertRaises(AUTO_LINT_PR.SafetyError):
-                                AUTO_LINT_PR.run_publish(arguments)
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, "remote-tip"],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    return_value=base_tree,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                ) as create_commit,
+            ):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                    AUTO_LINT_PR.run_publish(arguments)
 
-            authenticated.assert_not_called()
+            create_commit.assert_not_called()
 
 
 class OutputTest(unittest.TestCase):

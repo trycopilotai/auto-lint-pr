@@ -67,9 +67,11 @@ on:
           This pull request contains only the delta produced
           by the pinned trycopilotai/lint release.
     secrets:
-      token:
-        description: "Token for checkout and publication"
-        required: true
+      checkout_token:
+        description:
+          "Optional read token for private dependency
+          checkouts; never used for publication"
+        required: false
 
 permissions:
   contents: write
@@ -95,7 +97,8 @@ jobs:
         with:
           repository: trycopilotai/lint
           ref: 07c88d661d3c97ac6099966765c25c27e4f3a791
-          token: "${{ secrets.token }}"
+          token:
+            "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: dependencies/lint
       - name: Check out this action revision
@@ -103,13 +106,14 @@ jobs:
         with:
           repository: trycopilotai/auto-lint-pr
           ref: "${{ github.workflow_sha }}"
-          token: "${{ secrets.token }}"
+          token:
+            "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: dependencies/auto-lint-pr
       - name: Prepare and publish formatting
         uses: ./dependencies/auto-lint-pr
         with:
-          token: "${{ secrets.token }}"
+          token: "${{ github.token }}"
           lint-root: dependencies/lint
           cwd: "workspace/${{ inputs.cwd }}"
           base: "${{ inputs.base }}"

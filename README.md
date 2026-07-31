@@ -88,15 +88,28 @@ The action exposes `docker`, `modified`, `paths`,
 `files-from0`, `languages`, `hook`, `labels`, `reviewers`,
 `title`, and `body` inputs. The reusable workflow at
 `.github/workflows/auto-lint-pr.yml` supplies checkout,
-permissions, and per-repository/base concurrency.
+permissions, and per-repository/base concurrency. Its
+optional `checkout_token` secret is used only to read
+private dependency repositories. Publication always uses the
+calling repository's `github.token`.
 
 ## Safety boundaries
 
 - The action does not use `pull_request_target`.
 - Every checkout sets `persist-credentials: false`.
+- A private dependency checkout token never enters the
+  publication environment.
 - Formatting and the optional hook do not receive GitHub
   tokens or Actions runtime tokens.
-- Publishing uses a non-force, authenticated HTTPS push.
+- Publishing uses GitHub's expected-head commit mutation
+  with the exact bytes recorded during token-free
+  preparation.
+- Every published commit must be authored by the Actions bot
+  and carry a valid GitHub-generated signature.
+- Existing branches are reused only when their matching pull
+  request belongs to the same repository, every branch-only
+  commit passes those provenance checks, and their changed
+  paths exactly match the prepared delta.
 - The source checkout must be clean before preparation.
 - A formatter or hook failure stops before branch or pull
   request operations.

@@ -47,6 +47,9 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("persist-credentials: false", text)
         self.assertIn("pull-requests: write", text)
         self.assertIn("cancel-in-progress: false", text)
+        self.assertIn("secrets.checkout_token", text)
+        self.assertIn('token: "${{ github.token }}"', text)
+        self.assertNotIn("secrets.token", text)
         self.assertNotIn("pull_request_target", text)
 
     def test_external_actions_use_commit_references(self) -> None:

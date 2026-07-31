@@ -54,6 +54,12 @@ Set `persist-credentials: false` on every checkout. Use
 concurrency keyed by repository and base branch. Do not use
 `pull_request_target`.
 
+Use a separate read-only checkout credential when the
+dependencies are private. Never pass that credential to the
+composite action; publication must use the consumer
+repository's `github.token` so the resulting commit is
+authored by `github-actions[bot]`.
+
 ## Verify
 
 Run the consumer's exact repository verification command.
