@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128"
+  height="128" viewBox="0 0 128 128" role="img"
+  aria-labelledby="title description">
+  <title id="title">auto-lint-pr icon</title>
+  <desc id="description">
+    A verified formatting delta crossing into a pull request.
+  </desc>
+  <rect width="128" height="128" rx="28" fill="#0b1020" />
+  <path d="M32 36 V82 A14 14 0 0 0 46 96 H86"
+    fill="none" stroke="#91a7ff" stroke-width="10"
+    stroke-linecap="round" />
+  <circle cx="32" cy="30" r="10" fill="#57d39b" />
+  <circle cx="94" cy="96" r="10" fill="#57d39b" />
+  <path d="m57 61 10 10 24-27" fill="none"
+    stroke="#f5f7ff" stroke-width="9"
+    stroke-linecap="round" stroke-linejoin="round" />
+</svg>

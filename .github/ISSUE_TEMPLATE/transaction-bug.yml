@@ -1,0 +1,48 @@
+name: Transaction boundary bug
+description:
+  Report an incorrect token, delta, branch, or pull request
+  boundary.
+title: "[transaction] "
+labels:
+  - transaction-boundary
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include credentials or unresolved
+        vulnerability details. Use private vulnerability
+        reporting for security reports.
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description:
+        Full auto-lint-pr commit or signed release tag.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Boundary that failed
+      description:
+        Describe the expected and observed transaction
+        boundary.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description:
+        Include a reduced workflow or CLI invocation without
+        secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification output
+      description:
+        Include relevant make verify or workflow output.
+    validations:
+      required: true

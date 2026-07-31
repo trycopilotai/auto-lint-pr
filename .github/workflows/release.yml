@@ -29,11 +29,15 @@ jobs:
           ref: "${{ env.RELEASE_REF }}"
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify annotated release tag
+      - name: Verify signed release tag and exact commit
         shell: bash
         run: |
           test "${RELEASE_REF#v}" != "$RELEASE_REF"
           test "$(git cat-file -t "$RELEASE_REF")" = "tag"
+          git \
+            -c gpg.format=ssh \
+            -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers \
+            verify-tag "$RELEASE_REF"
           test "$(git rev-list -n 1 "$RELEASE_REF")" = \
             "$(git rev-parse HEAD)"
       - name: Set up Python

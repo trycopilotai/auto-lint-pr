@@ -181,14 +181,29 @@ def transcript() -> str:
 def render_svg(payload: str) -> str:
     lines = payload.rstrip("\n").splitlines()
     text_elements: list[str] = []
+    animation_rules: list[str] = []
     y = 132
-    for line in lines:
+    for index, line in enumerate(lines):
         escaped = html.escape(line)
         text_elements.append(
-            f'  <text x="72" y="{y}" ' 'class="terminal-line">' f"{escaped}</text>"
+            f'  <text x="72" y="{y}" '
+            f'class="terminal-line line-{index}">{escaped}</text>'
+        )
+        reveal = (index + 1) * 9
+        animation_rules.append(
+            f"""\
+    .line-{index} {{
+      animation: reveal-{index} 10s linear infinite;
+    }}
+    @keyframes reveal-{index} {{
+      0%, {reveal}% {{ opacity: 0; }}
+      {reveal + 0.1}%, 92% {{ opacity: 1; }}
+      92.1%, 100% {{ opacity: 0; }}
+    }}"""
         )
         y += 46
     body = "\n".join(text_elements)
+    animation = "\n".join(animation_rules)
     return f"""\
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640"
   viewBox="0 0 1280 640" role="img"
@@ -208,6 +223,14 @@ def render_svg(payload: str) -> str:
     .terminal-line {{
       fill: #e7ecff;
       font: 25px ui-monospace, SFMono-Regular, Menlo, monospace;
+      opacity: 0;
+    }}
+{animation}
+    @media (prefers-reduced-motion: reduce) {{
+      .terminal-line {{
+        animation: none;
+        opacity: 1;
+      }}
     }}
   </style>
 {body}

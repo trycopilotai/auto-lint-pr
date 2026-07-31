@@ -1,0 +1,44 @@
+name: Consumer integration request
+description:
+  Propose or report a reusable workflow, hook, or metadata
+  integration.
+title: "[integration] "
+labels:
+  - consumer-integration
+body:
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Integration surface
+      options:
+        - Reusable workflow
+        - Composite action
+        - CLI
+        - Consumer hook
+        - Labels or reviewers
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: State the observable consumer result.
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current configuration
+      description:
+        Include a reduced configuration without credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Relevant checks
+      description:
+        Name the local or workflow checks that cover the
+        request.
+    validations:
+      required: false

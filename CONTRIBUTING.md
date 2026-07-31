@@ -19,3 +19,9 @@ Behavior changes require tests. Security-sensitive changes
 should cover both the permitted path and the refusal path.
 Do not add a force push, `pull_request_target`, persistent
 checkout credentials, or credentials to the prepare phase.
+
+Issues labeled `good first issue` have a bounded change and
+verification path. Use `transaction-boundary` for token,
+delta, branch, and pull request invariants. Use
+`consumer-integration` for reusable workflow, hook, or
+metadata changes.

@@ -1,4 +1,10 @@
+<img src="assets/icon.svg" alt="" width="96" align="right">
+
 # auto-lint-pr
+
+[![Auto lint PR](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/auto-lint-pr.yml/badge.svg)](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/auto-lint-pr.yml)
+[![CI](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/ci.yml/badge.svg)](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/ci.yml)
+[![Release](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/release.yml/badge.svg)](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/release.yml)
 
 Turn pinned
 [`trycopilotai/lint`](https://github.com/trycopilotai/lint)
@@ -19,6 +25,13 @@ The tool refuses to reuse a remote branch unless there is
 exactly one matching open pull request, its base and head
 branches match, its reported head commit matches the remote
 tip, and that tip is authored by `github-actions[bot]`.
+
+![Reconstructed token-free prepare demo](assets/demo.svg)
+
+_Reconstructed from the deterministic
+[token-free transcript](evidence/demo-transcript.txt). A
+[static poster](assets/poster.svg) is available when motion
+is not useful._
 
 ## CLI
 
@@ -114,7 +127,7 @@ independent setting.
 The calling job must grant the workflow's write permissions
 because a reusable workflow cannot elevate the caller's
 token. `issues: write` is required for the optional labels
-input. Pin the workflow reference to a full commit:
+input. Pin the signed release tag shown below:
 
 ```yaml
 permissions:
@@ -127,7 +140,7 @@ jobs:
       issues: write
       pull-requests: write
     uses: >-
-      trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@<full-commit-sha>
+      trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@v0.1.0
 ```
 
 The called jobs check out this repository at
@@ -135,6 +148,24 @@ The called jobs check out this repository at
 reusable workflow come from the same pinned commit. The
 formatter job cannot carry command-file or action-checkout
 changes into the fresh publisher job.
+
+## Comparison
+
+Reviewed 2026-07-31 against the official
+[`peter-evans/create-pull-request` documentation](https://github.com/peter-evans/create-pull-request/blob/7ec5aae3c91d101b005af46adc760d265911886a/README.md).
+Both tools create or update pull requests from repository
+changes, but they own different transaction boundaries.
+
+| Boundary        | `auto-lint-pr`                                                                                                                | `peter-evans/create-pull-request`                                                                               |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                            | Consumes changes already present in the Actions workspace.                                                      |
+| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                    | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
+| Credentials     | Gives the write token only to the trusted publish substep after fresh-job verification.                                       | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
+| Existing branch | Requires one matching open pull request, audits branch-only commits and paths, verifies a staging commit, then fast-forwards. | Creates or updates the configured pull request branch.                                                          |
+
+Choose based on which boundary the workflow needs. This
+table does not claim that one tool is a drop-in replacement
+for the other.
 
 ## Safety boundaries
 
@@ -190,6 +221,22 @@ make verify
 This runs the CLI, transaction, action-adapter, metadata,
 and repository-invariant tests without GitHub credentials.
 
+The technical draft
+[Publishing formatter output without formatter credentials](docs/exact-delta-boundary.md)
+walks through the prepare, verify, and publish boundary.
+
+## Contribution paths and launch metric
+
+Issues labeled `good first issue` are bounded entry points.
+Use `transaction-boundary` for token, delta, branch, or pull
+request invariants and `consumer-integration` for reusable
+workflow, hook, or metadata work.
+
+Launch success is one external repository completing the
+prepare-to-publish transaction and opening a pull request
+whose changed paths equal the verified state receipt. Stars
+are not part of that metric.
+
 ## Claude Code
 
 After public launch, install the pinned standalone skill
@@ -212,6 +259,9 @@ cp "$target/skills/auto-lint-pr/SKILL.md" \
 
 The standalone invocation is `/auto-lint-pr`. A Claude
 marketplace distribution uses `/auto-lint-pr:auto-lint-pr`.
+Marketplace registration and marketplace install
+verification are deferred until a separately approved public
+launch; the block above is the standalone installation path.
 
 ## Codex
 
@@ -234,6 +284,10 @@ cp "$target/skills/auto-lint-pr/SKILL.md" \
 ```
 
 Invoke it as `$auto-lint-pr`.
+
+Codex marketplace registration and marketplace install
+verification are also deferred until that separately
+approved public launch.
 
 ## License
 

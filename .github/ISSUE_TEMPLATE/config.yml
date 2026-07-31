@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private vulnerability report
+    url: https://github.com/trycopilotai/auto-lint-pr/security/advisories/new
+    about:
+      Report credential or transaction-boundary
+      vulnerabilities privately.

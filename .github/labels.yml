@@ -1,0 +1,16 @@
+- name: good first issue
+  color: "7057ff"
+  description:
+    A bounded contribution with a documented verification
+    path.
+
+- name: transaction-boundary
+  color: "b60205"
+  description:
+    Token isolation, exact-delta verification, or branch
+    publication.
+
+- name: consumer-integration
+  color: "1d76db"
+  description:
+    Consumer setup, reusable workflows, hooks, or metadata.

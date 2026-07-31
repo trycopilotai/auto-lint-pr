@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import html
 import json
 import re
 import struct
@@ -55,6 +56,11 @@ def verify_required_paths() -> None:
         ".claude-plugin/plugin.json",
         ".codex-plugin/plugin.json",
         ".github/actionlint.yaml",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/ISSUE_TEMPLATE/consumer-integration.yml",
+        ".github/ISSUE_TEMPLATE/transaction-bug.yml",
+        ".github/labels.yml",
+        ".github/release-allowed-signers",
         ".github/workflows/auto-lint-pr.yml",
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
@@ -65,7 +71,9 @@ def verify_required_paths() -> None:
         "SECURITY.md",
         "action.yml",
         "action_entrypoint.py",
+        "assets/icon.svg",
         "auto_lint_pr.py",
+        "docs/exact-delta-boundary.md",
         "lint-dependency.json",
         "lint-release-manifest.json",
         "skills/auto-lint-pr/SKILL.md",
@@ -202,6 +210,24 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("publish job is not ordered after prepare")
     if "issues: write" not in publish:
         raise ValueError("publish job cannot apply labels")
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "gpg.format=ssh",
+        "gpg.ssh.allowedSignersFile=.github/release-allowed-signers",
+        'verify-tag "$RELEASE_REF"',
+    ):
+        if required not in release:
+            raise ValueError("release workflow does not verify the signed tag")
+    allowed = (ROOT / ".github" / "release-allowed-signers").read_text(encoding="utf-8")
+    allowed_pattern = re.compile(
+        r"trycopilotai-release ssh-ed25519 " r"[A-Za-z0-9+/]+={0,2}\n"
+    )
+    if allowed_pattern.fullmatch(allowed) is None:
+        raise ValueError("release signer allowlist is invalid")
+    if "origin" in allowed.casefold():
+        raise ValueError("release signer allowlist exposes an internal label")
 
 
 def verify_action_boundary() -> None:
@@ -234,6 +260,59 @@ def verify_action_boundary() -> None:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verify_launch_surface() -> None:
+    """Verify the recipient-visible launch surface."""
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    if 'src="assets/icon.svg"' not in readme:
+        raise ValueError("README does not display the project icon")
+    for workflow in (
+        "auto-lint-pr.yml",
+        "ci.yml",
+        "release.yml",
+    ):
+        badge = f"actions/workflows/{workflow}/badge.svg"
+        if readme.count(badge) != 1:
+            raise ValueError(f"README badge count is wrong: {workflow}")
+    for required in (
+        "assets/demo.svg",
+        "assets/poster.svg",
+        "Reconstructed",
+        "Reviewed 2026-07-31",
+        "peter-evans/create-pull-request/blob/"
+        "7ec5aae3c91d101b005af46adc760d265911886a/README.md",
+        "Launch success is one external repository completing",
+    ):
+        if required not in readme:
+            raise ValueError(f"README launch surface is missing: {required}")
+    if "<full-commit-sha>" in readme:
+        raise ValueError("README retains an unresolved commit placeholder")
+    if (
+        "trycopilotai/auto-lint-pr/.github/workflows/" "auto-lint-pr.yml@v0.1.0"
+    ) not in readme:
+        raise ValueError("README reusable workflow install is not pinned")
+
+    labels = (ROOT / ".github" / "labels.yml").read_text(encoding="utf-8")
+    documents = [
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md")
+    ]
+    for label in (
+        "good first issue",
+        "transaction-boundary",
+        "consumer-integration",
+    ):
+        if labels.count(f"name: {label}") != 1:
+            raise ValueError(f"label definition is wrong: {label}")
+        for document in documents:
+            if f"`{label}`" not in document:
+                raise ValueError(f"label is undocumented: {label}")
+
+    article = (ROOT / "docs" / "exact-delta-boundary.md").read_text(encoding="utf-8")
+    if "This is a draft about that boundary." not in article:
+        raise ValueError("technical article is not marked as a draft")
 
 
 def verify_demo() -> None:
@@ -271,6 +350,19 @@ def verify_demo() -> None:
     if (width, height) != (1280, 640):
         raise ValueError("social preview must be 1280 by 640")
 
+    transcript = (ROOT / value["output"]["path"]).read_text(encoding="utf-8")
+    demo = (ROOT / value["demo"]["path"]).read_text(encoding="utf-8")
+    lines = transcript.rstrip("\n").splitlines()
+    for line in lines:
+        if html.escape(line) not in demo:
+            raise ValueError("demo does not contain its transcript")
+    if demo.count("@keyframes reveal-") != len(lines):
+        raise ValueError("demo animation is not cumulative per line")
+    if "prefers-reduced-motion: reduce" not in demo:
+        raise ValueError("demo has no reduced-motion behavior")
+    if "animation: none" not in demo:
+        raise ValueError("demo cannot turn animation off")
+
     completed = subprocess.run(
         [
             sys.executable,
@@ -293,6 +385,7 @@ def main() -> int:
     verify_lint_dependency()
     verify_actions(files)
     verify_action_boundary()
+    verify_launch_surface()
     verify_demo()
     print(
         json.dumps(
