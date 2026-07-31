@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LINT_COMMIT = "cd1b94a34c4adac4b1512997f0111c78df3614c6"
+LINT_COMMIT = "d095640206c8f39cd968f81ce2e4bbcf8b03a0db"
 LINT_IMAGE_COMMIT = "3d5d4ee7b83b2c6442039b8a72a571c729ffcead"
 LINT_IMAGE_MANIFEST_SHA256 = (
     "6e5472c878e45816a640fa453da78c4a560c7769636dfd542e980bb734eb01df"
@@ -23,7 +23,7 @@ LINT_IMAGE_MANIFEST_SHA256 = (
 LINT_MANIFEST = "lint-release-manifest.json"
 LINT_REF = "refs/tags/v0.1.5"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
-LINT_TAG_OBJECT = "3bd9e69ebf7812bb81992d8be56c17a7dbc47df7"
+LINT_TAG_OBJECT = "a2630d45e0762e5b87d0474648803cdf9dd6bf42"
 
 
 def repository_files() -> list[Path]:
@@ -128,10 +128,6 @@ def verify_lint_manifest() -> None:
         raise ValueError("lint release manifest has no source")
     if source.get("commit") != LINT_COMMIT:
         raise ValueError("lint release manifest has the wrong commit")
-    if source.get("tag") != "v0.1.5":
-        raise ValueError("lint release manifest has the wrong tag")
-    if source.get("tag_object") != LINT_TAG_OBJECT:
-        raise ValueError("lint release manifest has the wrong tag object")
     digest = source.get("sha256")
     if not isinstance(digest, str):
         raise ValueError("lint release archive has no checksum")
@@ -175,6 +171,7 @@ def verify_lint_dependency() -> None:
         "ref": LINT_REF,
         "repository": LINT_REPOSITORY,
         "schema": 1,
+        "tag_object": LINT_TAG_OBJECT,
     }
     if value != expected:
         raise ValueError("lint dependency ledger does not match the release")

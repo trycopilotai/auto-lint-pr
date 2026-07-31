@@ -29,14 +29,14 @@
       "ghcr.io/trycopilotai/lint-yaml": "sha256:1e2eacab7e334e2713d1fa666bc191ed12c6545dd5aa4d5a89faf0cfab8845ea"
     },
     "inheritance": {
-      "docker_build_inputs": [
-        "images/Dockerfile",
-        "images/julia_entrypoint.jl",
-        "images/kotlin_entrypoint.c",
-        "images/requirements_entrypoint.py",
-        "images/xml_entrypoint.c",
-        "languages.json"
-      ],
+      "docker_build_inputs": {
+        "images/Dockerfile": "db4d0d5de6d364aeb5a4c3ee0cd8c512bd4d16300c240f7d6f4cab361bc146e5",
+        "images/julia_entrypoint.jl": "b8b75f75df2206c6e6708aa76b2b6ac559a0f57eecd33cc935e56135b60379bc",
+        "images/kotlin_entrypoint.c": "8d02ecf1b6e200938c22dee425b290f06ccc0e8e78e6645f4dde40137910b248",
+        "images/requirements_entrypoint.py": "cfaaadc9f4ddd4d069064f57014eb1db088d81b55308a759a69bf0baf9b03740",
+        "images/xml_entrypoint.c": "f71c0bfe77d605a0ed303b8228fbf9ba307aa50919fcb63b438d592d9e6dad39",
+        "languages.json": "d190829fb43023ee4b8b0755100705265041c80f69e8a86b49402ef62670921f"
+      },
       "inputs_unchanged": true,
       "prior_manifest": "release-manifest-0.1.4.json",
       "prior_manifest_sha256": "6e5472c878e45816a640fa453da78c4a560c7769636dfd542e980bb734eb01df"
@@ -48,10 +48,8 @@
   "schema_version": 2,
   "source": {
     "archive": "lint-0.1.5.tar.gz",
-    "commit": "cd1b94a34c4adac4b1512997f0111c78df3614c6",
-    "sha256": "13d59df9cd96334cbda2af5e5e91c37ba993aa56ef2411cd8250093d734e6bd2",
-    "tag": "v0.1.5",
-    "tag_object": "3bd9e69ebf7812bb81992d8be56c17a7dbc47df7"
+    "commit": "d095640206c8f39cd968f81ce2e4bbcf8b03a0db",
+    "sha256": "d1f77eeba15e7597fc3d718167912a5bbad8ac2562d03f54b240c3cf2295a18b"
   },
   "tools": {
     "black": "24.10.0",
