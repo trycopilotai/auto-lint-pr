@@ -14,9 +14,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LINT_COMMIT = "07c88d661d3c97ac6099966765c25c27e4f3a791"
+LINT_COMMIT = "3d5d4ee7b83b2c6442039b8a72a571c729ffcead"
 LINT_MANIFEST = "lint-release-manifest.json"
-LINT_REF = "refs/tags/v0.1.3"
+LINT_REF = "refs/tags/v0.1.4"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
 
 
@@ -130,7 +130,7 @@ def verify_lint_manifest() -> None:
             raise ValueError(f"unexpected lint image: {image}")
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
             raise ValueError(f"invalid lint image digest: {image}")
-    if value.get("release") != "0.1.3":
+    if value.get("release") != "0.1.4":
         raise ValueError("lint release manifest has the wrong release")
 
 
