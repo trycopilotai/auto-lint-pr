@@ -16,14 +16,85 @@
     .terminal-line {
       fill: #e7ecff;
       font: 25px ui-monospace, SFMono-Regular, Menlo, monospace;
+      opacity: 0;
+    }
+    .line-0 {
+      animation: reveal-0 10s linear infinite;
+    }
+    @keyframes reveal-0 {
+      0%, 9% { opacity: 0; }
+      9.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-1 {
+      animation: reveal-1 10s linear infinite;
+    }
+    @keyframes reveal-1 {
+      0%, 18% { opacity: 0; }
+      18.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-2 {
+      animation: reveal-2 10s linear infinite;
+    }
+    @keyframes reveal-2 {
+      0%, 27% { opacity: 0; }
+      27.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-3 {
+      animation: reveal-3 10s linear infinite;
+    }
+    @keyframes reveal-3 {
+      0%, 36% { opacity: 0; }
+      36.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-4 {
+      animation: reveal-4 10s linear infinite;
+    }
+    @keyframes reveal-4 {
+      0%, 45% { opacity: 0; }
+      45.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-5 {
+      animation: reveal-5 10s linear infinite;
+    }
+    @keyframes reveal-5 {
+      0%, 54% { opacity: 0; }
+      54.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-6 {
+      animation: reveal-6 10s linear infinite;
+    }
+    @keyframes reveal-6 {
+      0%, 63% { opacity: 0; }
+      63.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    .line-7 {
+      animation: reveal-7 10s linear infinite;
+    }
+    @keyframes reveal-7 {
+      0%, 72% { opacity: 0; }
+      72.1%, 92% { opacity: 1; }
+      92.1%, 100% { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .terminal-line {
+        animation: none;
+        opacity: 1;
+      }
     }
   </style>
-  <text x="72" y="132" class="terminal-line">$ python3 auto_lint_pr.py prepare --lint-root &lt;pinned-lint&gt;</text>
-  <text x="72" y="178" class="terminal-line">prepare phase: success</text>
-  <text x="72" y="224" class="terminal-line">formatter credentials: absent</text>
-  <text x="72" y="270" class="terminal-line">base commit recorded: True</text>
-  <text x="72" y="316" class="terminal-line">branch: auto-lint/main</text>
-  <text x="72" y="362" class="terminal-line">changed: true</text>
-  <text x="72" y="408" class="terminal-line">exact delta: sample.txt</text>
-  <text x="72" y="454" class="terminal-line">publish phase: not run in this token-free demo</text>
+  <text x="72" y="132" class="terminal-line line-0">$ python3 auto_lint_pr.py prepare --lint-root &lt;pinned-lint&gt;</text>
+  <text x="72" y="178" class="terminal-line line-1">prepare phase: success</text>
+  <text x="72" y="224" class="terminal-line line-2">formatter credentials: absent</text>
+  <text x="72" y="270" class="terminal-line line-3">base commit recorded: True</text>
+  <text x="72" y="316" class="terminal-line line-4">branch: auto-lint/main</text>
+  <text x="72" y="362" class="terminal-line line-5">changed: true</text>
+  <text x="72" y="408" class="terminal-line line-6">exact delta: sample.txt</text>
+  <text x="72" y="454" class="terminal-line line-7">publish phase: not run in this token-free demo</text>
 </svg>
