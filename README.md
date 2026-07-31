@@ -87,11 +87,34 @@ action:
 The action exposes `docker`, `modified`, `paths`,
 `files-from0`, `languages`, `hook`, `labels`, `reviewers`,
 `title`, and `body` inputs. The reusable workflow at
-`.github/workflows/auto-lint-pr.yml` supplies checkout,
-permissions, and per-repository/base concurrency. Its
+`.github/workflows/auto-lint-pr.yml` supplies checkout, its
+permission ceiling, and per-repository/base concurrency. Its
 optional `checkout_token` secret is used only to read
 private dependency repositories. Publication always uses the
 calling repository's `github.token`.
+
+## Reusable workflow
+
+The calling job must grant both write permissions because a
+reusable workflow cannot elevate the caller's token. Pin the
+workflow reference to a full commit:
+
+```yaml
+permissions:
+  contents: read
+
+jobs:
+  auto-lint:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: >-
+      trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@<full-commit-sha>
+```
+
+The called job checks out its own repository at
+`job.workflow_sha`, so the local composite action and the
+reusable workflow come from the same pinned commit.
 
 ## Safety boundaries
 
@@ -104,8 +127,15 @@ calling repository's `github.token`.
 - Publishing uses GitHub's expected-head commit mutation
   with the exact bytes recorded during token-free
   preparation.
+- Additions and modifications are limited to regular
+  `100644` files, the mode represented by that mutation.
+  Deletions are limited to the same regular-file mode.
 - Every published commit must be authored by the Actions bot
   and carry a valid GitHub-generated signature.
+- An existing pull-request branch is updated only after its
+  candidate commit passes on a transaction-specific staging
+  branch. Promotion is a non-forced fast-forward, and the
+  staging branch is then removed.
 - Existing branches are reused only when their matching pull
   request belongs to the same repository, every branch-only
   commit passes those provenance checks, and their changed
@@ -114,7 +144,8 @@ calling repository's `github.token`.
 - A formatter or hook failure stops before branch or pull
   request operations.
 - The lint checkout must be clean and its commit must match
-  the vendored release manifest.
+  the vendored release manifest. Tracked, untracked, and
+  ignored residue are all rejected.
 
 This action intentionally needs `contents: write` and
 `pull-requests: write` during publication. Review consumer

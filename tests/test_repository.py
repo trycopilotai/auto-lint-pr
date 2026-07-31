@@ -49,8 +49,23 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("secrets.checkout_token", text)
         self.assertIn('token: "${{ github.token }}"', text)
+        self.assertIn(
+            'repository: "${{ job.workflow_repository }}"',
+            text,
+        )
+        self.assertIn('ref: "${{ job.workflow_sha }}"', text)
+        self.assertNotIn("github.workflow_sha", text)
         self.assertNotIn("secrets.token", text)
         self.assertNotIn("pull_request_target", text)
+
+    def test_readme_requires_caller_write_permissions(self) -> None:
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        marker = "The calling job must grant both write permissions"
+        self.assertIn(marker, text)
+        reusable = text.split("## Reusable workflow", maxsplit=1)[1]
+        self.assertIn("contents: write", reusable)
+        self.assertIn("pull-requests: write", reusable)
 
     def test_external_actions_use_commit_references(self) -> None:
         pattern = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")

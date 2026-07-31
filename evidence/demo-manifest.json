@@ -30,6 +30,6 @@
   },
   "skill": {
     "path": "skills/auto-lint-pr/SKILL.md",
-    "sha256": "be96b3d8832baaa5874f844c2fe76a63a4b7478eda4cb3ccd52ecda3c9ad5d23"
+    "sha256": "da64adf08aef842cb3a64d3a85bf65b39dd10380ef1141fdb953683eb30ed774"
   }
 }

@@ -104,8 +104,8 @@ jobs:
       - name: Check out this action revision
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          repository: trycopilotai/auto-lint-pr
-          ref: "${{ github.workflow_sha }}"
+          repository: "${{ job.workflow_repository }}"
+          ref: "${{ job.workflow_sha }}"
           token:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false

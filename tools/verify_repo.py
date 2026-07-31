@@ -54,6 +54,7 @@ def verify_required_paths() -> None:
     required = (
         ".claude-plugin/plugin.json",
         ".codex-plugin/plugin.json",
+        ".github/actionlint.yaml",
         ".github/workflows/auto-lint-pr.yml",
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
@@ -178,6 +179,12 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("reusable workflow has no private checkout token")
     if 'token: "${{ github.token }}"' not in reusable:
         raise ValueError("publication does not use the repository token")
+    if 'repository: "${{ job.workflow_repository }}"' not in reusable:
+        raise ValueError("reusable workflow does not check out its own repository")
+    if 'ref: "${{ job.workflow_sha }}"' not in reusable:
+        raise ValueError("reusable workflow does not use its own revision")
+    if "github.workflow_sha" in reusable:
+        raise ValueError("reusable workflow uses the caller workflow revision")
     if "secrets.token" in reusable:
         raise ValueError("one credential cannot serve checkout and publication")
 

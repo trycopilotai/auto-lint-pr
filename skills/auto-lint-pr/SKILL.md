@@ -50,9 +50,16 @@ permissions:
   pull-requests: write
 ```
 
+Place these permissions on the calling job. A reusable
+workflow cannot elevate the caller's token permissions.
+
 Set `persist-credentials: false` on every checkout. Use
 concurrency keyed by repository and base branch. Do not use
 `pull_request_target`.
+
+Keep existing-branch updates behind a temporary staging ref.
+Verify its exact tree and commit provenance before a
+non-forced fast-forward of the pull-request branch.
 
 Use a separate read-only checkout credential when the
 dependencies are private. Never pass that credential to the

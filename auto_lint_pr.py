@@ -251,11 +251,12 @@ def verify_lint_release(
         lint_root,
         "status",
         "--porcelain=v1",
-        "--untracked-files=no",
+        "--ignored=matching",
+        "--untracked-files=all",
         environment=isolated,
     ).stdout
     if tracked != "":
-        raise DependencyError("lint checkout has tracked modifications")
+        raise DependencyError("lint checkout is not clean")
     return manifest
 
 
@@ -316,9 +317,25 @@ def file_record(repository: Path, relative: str) -> dict[str, str]:
         record["sha256"] = hashlib.sha256(payload).hexdigest()
         return record
     if not path.exists():
+        isolated = token_free_environment(os.environ)
+        entry = git(
+            repository,
+            "ls-tree",
+            "-z",
+            "HEAD",
+            "--",
+            relative,
+            environment=isolated,
+        ).stdout
+        metadata, separator, listed_path = entry.partition("\t")
+        fields = metadata.split()
+        if separator != "\t" or listed_path.rstrip("\0") != relative:
+            raise SafetyError(f"deleted path is absent from HEAD: {relative}")
+        if len(fields) != 3:
+            raise SafetyError(f"deleted path metadata is invalid: {relative}")
         record["content"] = ""
         record["kind"] = "deleted"
-        record["mode"] = ""
+        record["mode"] = fields[0]
         record["sha256"] = ""
         return record
     raise SafetyError(f"changed path is not a file: {relative}")
@@ -328,11 +345,24 @@ def delta_records(repository: Path) -> list[dict[str, str]]:
     return [file_record(repository, relative) for relative in changed_paths(repository)]
 
 
+def validate_prepared_modes(records: list[dict[str, str]]) -> None:
+    """Restrict every changed path to a representable regular blob."""
+
+    for record in records:
+        if record["kind"] not in {"deleted", "file"}:
+            path = record["path"]
+            raise SafetyError(f"prepared path has an unsupported kind: {path}")
+        if record["mode"] != "100644":
+            path = record["path"]
+            raise SafetyError(f"prepared path has an unsupported mode: {path}")
+
+
 def publication_file_changes(
     records: list[dict[str, str]],
 ) -> dict[str, list[dict[str, str]]]:
     """Return immutable GraphQL changes from recorded prepare bytes."""
 
+    validate_prepared_modes(records)
     additions = []
     deletions = []
     for record in records:
@@ -448,6 +478,7 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
     if current_head != base_head:
         raise SafetyError("base checkout changed during token-free preparation")
     records = delta_records(repository)
+    validate_prepared_modes(records)
     state = {
         "base": arguments.base,
         "base_head": base_head,
@@ -830,15 +861,17 @@ def validate_base_tree(
         if record["kind"] == "deleted":
             if current is None:
                 raise SafetyError(f"prepared deletion is absent from base: {path}")
+            if current["type"] != "blob":
+                raise SafetyError(f"prepared deletion is not a blob: {path}")
+            if current["mode"] != "100644":
+                raise SafetyError(f"base path has an unsupported mode: {path}")
             continue
-        if current is None:
-            if record["kind"] != "file" or record["mode"] != "100644":
-                raise SafetyError(f"new path has an unsupported mode: {path}")
-        else:
+        validate_prepared_modes([record])
+        if current is not None:
             if current["type"] != "blob":
                 raise SafetyError(f"prepared path is not a blob in base: {path}")
-            if current["mode"] != record["mode"]:
-                raise SafetyError(f"prepared path changes file mode: {path}")
+            if current["mode"] != "100644":
+                raise SafetyError(f"base path has an unsupported mode: {path}")
         if current == desired:
             raise SafetyError(f"prepared path does not change base content: {path}")
 
@@ -909,6 +942,55 @@ def delete_remote_branch(
     )
 
 
+def staging_branch_name(
+    branch: str,
+    expected_head: str,
+    records: list[dict[str, str]],
+) -> str:
+    """Return a deterministic private staging ref for one exact transaction."""
+
+    payload = json.dumps(
+        {
+            "branch": branch,
+            "expected_head": expected_head,
+            "records": records,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    suffix = hashlib.sha256(payload).hexdigest()[:16]
+    return f"{branch}-staging-{suffix}"
+
+
+def advance_remote_branch(
+    repository_name: str,
+    branch: str,
+    expected_head: str,
+    published_commit: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Fast-forward a target ref only after its staged commit is verified."""
+
+    actual_tip = remote_tip(repository_name, branch, environment)
+    if actual_tip != expected_head:
+        raise SafetyError("publication branch changed before promotion")
+    gh_api(
+        [
+            "--method",
+            "PATCH",
+            f"repos/{repository_name}/git/refs/heads/{branch}",
+            "-f",
+            f"sha={published_commit}",
+            "-F",
+            "force=false",
+        ],
+        environment,
+    )
+    promoted_tip = remote_tip(repository_name, branch, environment)
+    if promoted_tip != published_commit:
+        raise SafetyError("promoted commit is not the publication branch tip")
+
+
 def create_signed_commit(
     repository_name: str,
     branch: str,
@@ -916,7 +998,7 @@ def create_signed_commit(
     records: list[dict[str, str]],
     message: str,
     environment: Mapping[str, str],
-) -> str:
+) -> tuple[str, Any]:
     """Atomically append a GitHub-signed commit with exact file changes."""
 
     query = """\
@@ -967,6 +1049,17 @@ mutation($input: CreateCommitOnBranchInput!) {
         raise CommandError("commit mutation object IDs are invalid")
     if target.get("oid") != oid:
         raise SafetyError("commit mutation ref does not match its commit")
+    return oid, commit.get("signature")
+
+
+def verify_created_commit(
+    repository_name: str,
+    oid: str,
+    signature: Any,
+    environment: Mapping[str, str],
+) -> None:
+    """Verify REST and GraphQL provenance after retaining the new object ID."""
+
     metadata = gh_api(
         [
             "--method",
@@ -977,9 +1070,8 @@ mutation($input: CreateCommitOnBranchInput!) {
     )
     if not isinstance(metadata, dict):
         raise CommandError("created commit metadata is invalid")
-    metadata["github_signature"] = commit.get("signature")
+    metadata["github_signature"] = signature
     validate_branch_commits([metadata])
-    return oid
 
 
 def apply_labels_and_reviewers(
@@ -1075,6 +1167,8 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         require_matching_pull_tip(pull_request, tip)
 
     created_branch = False
+    staging_branch = None
+    publication_branch = branch
     expected_head = state["base_head"]
     if tip is not None:
         branch_commits(
@@ -1097,6 +1191,20 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
             write_action_output("changed", "false")
             return result
         expected_head = tip
+        staging_branch = staging_branch_name(
+            branch,
+            expected_head,
+            state["delta"],
+        )
+        if remote_tip(repository_name, staging_branch, environment) is not None:
+            raise SafetyError("transaction staging branch already exists")
+        create_remote_branch(
+            repository_name,
+            staging_branch,
+            expected_head,
+            environment,
+        )
+        publication_branch = staging_branch
     else:
         create_remote_branch(
             repository_name,
@@ -1106,13 +1214,20 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         )
         created_branch = True
 
+    published_commit = None
     try:
-        published_commit = create_signed_commit(
+        published_commit, published_signature = create_signed_commit(
             repository_name,
-            branch,
+            publication_branch,
             expected_head,
             state["delta"],
             "Apply automated formatting",
+            environment,
+        )
+        verify_created_commit(
+            repository_name,
+            published_commit,
+            published_signature,
             environment,
         )
         published_tree = remote_tree(
@@ -1128,24 +1243,55 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
             raise SafetyError("published tree differs from the prepared delta")
         published_tip = remote_tip(
             repository_name,
-            branch,
+            publication_branch,
             environment,
         )
         if published_tip != published_commit:
             raise SafetyError("published commit is not the branch tip")
+        if staging_branch is not None:
+            advance_remote_branch(
+                repository_name,
+                branch,
+                expected_head,
+                published_commit,
+                environment,
+            )
+            delete_remote_branch(
+                repository_name,
+                staging_branch,
+                environment,
+            )
+            staging_branch = None
     except AutoLintError as error:
+        cleanup_branch = staging_branch
         if created_branch:
+            cleanup_branch = branch
+        if cleanup_branch is not None:
             try:
                 delete_remote_branch(
                     repository_name,
-                    branch,
+                    cleanup_branch,
                     environment,
                 )
             except AutoLintError as cleanup_error:
                 raise SafetyError(
-                    "commit failed and the new branch cleanup also failed"
+                    "commit failed and its staging branch cleanup also failed"
                 ) from cleanup_error
         raise error
+
+    if pull_request is not None:
+        pull_request = select_existing_pull_request(
+            open_pull_requests(repository_name, branch, environment),
+            base=state["base"],
+            branch=branch,
+            repository_name=repository_name,
+        )
+        if pull_request is None:
+            raise SafetyError("updated auto-lint branch lost its pull request")
+        require_matching_pull_tip(
+            pull_request,
+            published_commit,
+        )
 
     if pull_request is None:
         try:
