@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release-ref:
+        description: "Existing signed release tag"
+        required: true
+        type: string
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_REF:
+    "${{ github.event_name == 'workflow_dispatch' &&
+    inputs.release-ref || github.ref_name }}"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: "${{ env.RELEASE_REF }}"
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify annotated release tag
+        shell: bash
+        run: |
+          test "${RELEASE_REF#v}" != "$RELEASE_REF"
+          test "$(git cat-file -t "$RELEASE_REF")" = "tag"
+          test "$(git rev-list -n 1 "$RELEASE_REF")" = \
+            "$(git rev-parse HEAD)"
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13.14"
+      - name: Verify repository
+        run: make verify
+      - name: Check Python formatting
+        run: >-
+          pipx run --spec black==24.10.0 black --check
+          --diff auto_lint_pr.py action_entrypoint.py tests
+          tools scripts
+      - name: Check document codec
+        run: >-
+          npx -y prettier@3.7.4 --check --print-width 60
+          --prose-wrap always --trailing-comma none
+          README.md CONTRIBUTING.md SECURITY.md action.yml
+          .github .claude-plugin .codex-plugin docs evidence
+          skills lint-release-manifest.json
+
+  draft:
+    needs: verify
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: "${{ env.RELEASE_REF }}"
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read repository visibility
+        id: visibility
+        shell: bash
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          visibility="$(
+            gh api "repos/$GITHUB_REPOSITORY" --jq .visibility
+          )"
+          printf 'value=%s\n' "$visibility" >>"$GITHUB_OUTPUT"
+      - name: Create deterministic source archive
+        shell: bash
+        run: |
+          version="${RELEASE_REF#v}"
+          mkdir dist
+          git archive \
+            --format=tar \
+            --prefix="auto-lint-pr-$version/" \
+            "$RELEASE_REF" |
+            gzip -n >"dist/auto-lint-pr-$version.tar.gz"
+          (
+            cd dist
+            sha256sum ./* >SHA256SUMS
+          )
+      - name: Attest source archive
+        if: steps.visibility.outputs.value == 'public'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: "dist/auto-lint-pr-*.tar.gz"
+      - name: Create draft release
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        shell: bash
+        run: |
+          version="${RELEASE_REF#v}"
+          draft="$(
+            gh release view "$RELEASE_REF" \
+              --json isDraft \
+              --jq .isDraft \
+              2>/dev/null || true
+          )"
+          if test "$draft" = "true"; then
+            gh release upload "$RELEASE_REF" \
+              --clobber \
+              dist/*
+          elif test "$draft" = ""; then
+            gh release create "$RELEASE_REF" \
+              --draft \
+              --title "auto-lint-pr $version" \
+              --notes \
+              "Release artifacts for auto-lint-pr $version." \
+              dist/*
+          else
+            printf '%s\n' \
+              "release $RELEASE_REF is already public" >&2
+            exit 1
+          fi

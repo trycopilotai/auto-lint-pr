@@ -1,0 +1,125 @@
+name: Auto lint pull request
+
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: "Pull request base branch"
+        required: false
+        type: string
+        default: main
+      cwd:
+        description: "Path below the consumer checkout"
+        required: false
+        type: string
+        default: "."
+      modified:
+        description: "Format modified Git-tracked files"
+        required: false
+        type: boolean
+        default: false
+      docker:
+        description:
+          "Use pinned language-specific containers"
+        required: false
+        type: boolean
+        default: true
+      paths:
+        description: "Shell-quoted explicit paths"
+        required: false
+        type: string
+        default: ""
+      files-from0:
+        description: "NUL-delimited path file"
+        required: false
+        type: string
+        default: ""
+      languages:
+        description: "Comma-separated lint language ids"
+        required: false
+        type: string
+        default: ""
+      hook:
+        description: "Token-free command after formatting"
+        required: false
+        type: string
+        default: ""
+      labels:
+        description: "Comma-separated labels"
+        required: false
+        type: string
+        default: ""
+      reviewers:
+        description: "Comma-separated reviewer logins"
+        required: false
+        type: string
+        default: ""
+      title:
+        description: "Pull request title"
+        required: false
+        type: string
+        default: "Apply automated formatting"
+      body:
+        description: "Pull request body"
+        required: false
+        type: string
+        default: >-
+          This pull request contains only the delta produced
+          by the pinned trycopilotai/lint release.
+    secrets:
+      token:
+        description: "Token for checkout and publication"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group:
+    "auto-lint-${{ github.repository }}-${{ inputs.base }}"
+  cancel-in-progress: false
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out consumer base
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: "${{ inputs.base }}"
+          persist-credentials: false
+          path: workspace
+      - name: Check out pinned lint
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: trycopilotai/lint
+          ref: 7b103526f20d859ad15557f483ec0591638c9116
+          token: "${{ secrets.token }}"
+          persist-credentials: false
+          path: dependencies/lint
+      - name: Check out this action revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: trycopilotai/auto-lint-pr
+          ref: "${{ github.workflow_sha }}"
+          token: "${{ secrets.token }}"
+          persist-credentials: false
+          path: dependencies/auto-lint-pr
+      - name: Prepare and publish formatting
+        uses: ./dependencies/auto-lint-pr
+        with:
+          token: "${{ secrets.token }}"
+          lint-root: dependencies/lint
+          cwd: "workspace/${{ inputs.cwd }}"
+          base: "${{ inputs.base }}"
+          modified: "${{ inputs.modified }}"
+          docker: "${{ inputs.docker }}"
+          paths: "${{ inputs.paths }}"
+          files-from0: "${{ inputs.files-from0 }}"
+          languages: "${{ inputs.languages }}"
+          hook: "${{ inputs.hook }}"
+          labels: "${{ inputs.labels }}"
+          reviewers: "${{ inputs.reviewers }}"
+          title: "${{ inputs.title }}"
+          body: "${{ inputs.body }}"

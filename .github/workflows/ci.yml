@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "ci-${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name:
+      "test (${{ matrix.os }}, Python ${{ matrix.python }})"
+    runs-on: "${{ matrix.os }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: Verify repository
+        run: make verify PYTHON=python
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Check Python formatting
+        run: >-
+          pipx run --spec black==24.10.0 black --check
+          --diff auto_lint_pr.py action_entrypoint.py tests
+          tools scripts
+      - name: Check document codec
+        run: >-
+          npx -y prettier@3.7.4 --check --print-width 60
+          --prose-wrap always --trailing-comma none
+          README.md CONTRIBUTING.md SECURITY.md action.yml
+          .github .claude-plugin .codex-plugin docs evidence
+          skills lint-release-manifest.json
+
+  pinned-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Apply pinned lint release without a token
+        uses: trycopilotai/lint@7b103526f20d859ad15557f483ec0591638c9116
+        with:
+          mode: write
+          docker: "false"
+          cwd: fixtures/integration
+          languages: requirements
+      - name: Verify pinned output
+        shell: bash
+        run: |
+          diff -u \
+            fixtures/integration/expected.txt \
+            fixtures/integration/requirements.txt
+          test -n "$(git diff --name-only)"

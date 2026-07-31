@@ -1,0 +1,117 @@
+name: "auto-lint-pr"
+description:
+  "Turn pinned formatter output into a reviewable pull
+  request"
+inputs:
+  token:
+    description: "Token used only by the publish step"
+    required: true
+  lint-root:
+    description:
+      "Path to the pinned trycopilotai/lint checkout"
+    required: true
+  cwd:
+    description: "Consumer repository working directory"
+    required: false
+    default: "."
+  base:
+    description: "Pull request base branch"
+    required: false
+    default: "main"
+  modified:
+    description: "Format only modified Git-tracked files"
+    required: false
+    default: "false"
+  docker:
+    description: "Use pinned language-specific containers"
+    required: false
+    default: "true"
+  paths:
+    description: "Shell-quoted explicit paths"
+    required: false
+    default: ""
+  files-from0:
+    description: "NUL-delimited path file"
+    required: false
+    default: ""
+  languages:
+    description: "Comma-separated lint language ids"
+    required: false
+    default: ""
+  hook:
+    description:
+      "Token-free consumer command after formatting"
+    required: false
+    default: ""
+  labels:
+    description: "Comma-separated labels"
+    required: false
+    default: ""
+  reviewers:
+    description: "Comma-separated reviewer logins"
+    required: false
+    default: ""
+  title:
+    description: "Pull request title"
+    required: false
+    default: "Apply automated formatting"
+  body:
+    description: "Pull request body"
+    required: false
+    default:
+      "This pull request contains only the delta produced by
+      the pinned trycopilotai/lint release."
+outputs:
+  changed:
+    description: "Whether a formatting delta was published"
+    value:
+      "${{ steps.publish.outputs.changed ||
+      steps.prepare.outputs.changed }}"
+  pull-request:
+    description: "Created or updated pull request number"
+    value: "${{ steps.publish.outputs.pull-request }}"
+runs:
+  using: "composite"
+  steps:
+    - name: Prepare token-free formatting delta
+      id: prepare
+      shell: bash
+      env:
+        GH_TOKEN: ""
+        GITHUB_TOKEN: ""
+        INPUT_BASE: "${{ inputs.base }}"
+        INPUT_BODY: "${{ inputs.body }}"
+        INPUT_CWD: "${{ inputs.cwd }}"
+        INPUT_DOCKER: "${{ inputs.docker }}"
+        INPUT_FILES_FROM0: "${{ inputs.files-from0 }}"
+        INPUT_HOOK: "${{ inputs.hook }}"
+        INPUT_LABELS: "${{ inputs.labels }}"
+        INPUT_LANGUAGES: "${{ inputs.languages }}"
+        INPUT_MODIFIED: "${{ inputs.modified }}"
+        INPUT_PATHS: "${{ inputs.paths }}"
+        INPUT_REVIEWERS: "${{ inputs.reviewers }}"
+        INPUT_TITLE: "${{ inputs.title }}"
+        LINT_ROOT: "${{ inputs.lint-root }}"
+        STATE_PATH:
+          "${{ runner.temp }}/auto-lint-pr-state.json"
+      run: >-
+        python3 "$GITHUB_ACTION_PATH/action_entrypoint.py"
+        prepare
+    - name: Publish exact prepared delta
+      id: publish
+      if: steps.prepare.outputs.changed == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: "${{ inputs.token }}"
+        INPUT_BASE: "${{ inputs.base }}"
+        INPUT_BODY: "${{ inputs.body }}"
+        INPUT_CWD: "${{ inputs.cwd }}"
+        INPUT_LABELS: "${{ inputs.labels }}"
+        INPUT_REVIEWERS: "${{ inputs.reviewers }}"
+        INPUT_TITLE: "${{ inputs.title }}"
+        LINT_ROOT: "${{ inputs.lint-root }}"
+        STATE_PATH:
+          "${{ runner.temp }}/auto-lint-pr-state.json"
+      run: >-
+        python3 "$GITHUB_ACTION_PATH/action_entrypoint.py"
+        publish

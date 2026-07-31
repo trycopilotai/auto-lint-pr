@@ -1,0 +1,6 @@
+interface:
+  display_name: "auto-lint-pr"
+  short_description: "Publish pinned formatting as a PR"
+  default_prompt: >-
+    Use $auto-lint-pr to prepare an on-demand formatting
+    pull request workflow with a token-free formatter phase.

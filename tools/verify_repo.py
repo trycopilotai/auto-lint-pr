@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Verify repository invariants outside the unit surfaces."""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import re
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LINT_COMMIT = "7b103526f20d859ad15557f483ec0591638c9116"
+
+
+def repository_files() -> list[Path]:
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ROOT),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    files: list[Path] = []
+    seen: set[str] = set()
+    for value in completed.stdout.split(b"\0"):
+        if value == b"":
+            continue
+        relative = value.decode("utf-8")
+        if relative in seen:
+            continue
+        seen.add(relative)
+        path = ROOT / relative
+        if path.is_file():
+            files.append(path)
+    return files
+
+
+def verify_required_paths() -> None:
+    required = (
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+        ".github/workflows/auto-lint-pr.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "Makefile",
+        "README.md",
+        "SECURITY.md",
+        "action.yml",
+        "action_entrypoint.py",
+        "auto_lint_pr.py",
+        "lint-release-manifest.json",
+        "skills/auto-lint-pr/SKILL.md",
+    )
+    for relative in required:
+        if not (ROOT / relative).is_file():
+            raise ValueError(f"required file is missing: {relative}")
+
+    skill = ROOT / "skill"
+    if not skill.is_symlink():
+        raise ValueError("skill must be a symbolic link")
+    expected = (ROOT / "skills" / "auto-lint-pr").resolve()
+    if skill.resolve() != expected:
+        raise ValueError("skill symbolic link has the wrong target")
+
+
+def verify_python(files: list[Path]) -> None:
+    for path in files:
+        if path.suffix != ".py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.IfExp):
+                raise ValueError(f"ternary expression: {path}:{node.lineno}")
+
+
+def verify_plugins() -> None:
+    for relative in (
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+    ):
+        path = ROOT / relative
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("name") != "auto-lint-pr":
+            raise ValueError(f"wrong plugin name: {relative}")
+        if value.get("version") != "0.1.0":
+            raise ValueError(f"wrong plugin version: {relative}")
+
+
+def verify_lint_manifest() -> None:
+    path = ROOT / "lint-release-manifest.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if value.get("schema_version") != 1:
+        raise ValueError("lint release manifest has the wrong schema")
+    source = value.get("source")
+    if not isinstance(source, dict):
+        raise ValueError("lint release manifest has no source")
+    if source.get("commit") != LINT_COMMIT:
+        raise ValueError("lint release manifest has the wrong commit")
+    digest = source.get("sha256")
+    if not isinstance(digest, str):
+        raise ValueError("lint release archive has no checksum")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("lint release archive checksum is invalid")
+    images = value.get("images")
+    if not isinstance(images, dict):
+        raise ValueError("lint release manifest has no image digests")
+    if len(images) != 26:
+        raise ValueError("lint release manifest must bind 26 images")
+    for image, image_digest in images.items():
+        if not image.startswith("ghcr.io/trycopilotai/lint-"):
+            raise ValueError(f"unexpected lint image: {image}")
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+            raise ValueError(f"invalid lint image digest: {image}")
+    if value.get("release") != "0.1.0":
+        raise ValueError("lint release manifest has the wrong release")
+
+
+def verify_actions(files: list[Path]) -> None:
+    reference = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")
+    full_sha = re.compile(r"[0-9a-f]{40}")
+    workflows = [
+        path for path in files if path.parent == ROOT / ".github" / "workflows"
+    ]
+    if len(workflows) != 3:
+        raise ValueError("expected three GitHub Actions workflows")
+    for path in workflows:
+        text = path.read_text(encoding="utf-8")
+        if "pull_request_target" in text:
+            raise ValueError(f"pull_request_target is not allowed: {path}")
+        if "persist-credentials: true" in text:
+            raise ValueError(f"persistent checkout credentials are not allowed: {path}")
+        for match in reference.finditer(text):
+            if full_sha.fullmatch(match.group(2)) is None:
+                raise ValueError(
+                    f"action is not commit-pinned: {path}: " f"{match.group(1)}"
+                )
+
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in workflows)
+    if LINT_COMMIT not in combined:
+        raise ValueError("workflows do not pin the lint release commit")
+
+
+def verify_action_boundary() -> None:
+    text = (ROOT / "action.yml").read_text(encoding="utf-8")
+    marker = "    - name: Publish exact prepared delta"
+    if marker not in text:
+        raise ValueError("action publish step is missing")
+    prepare, publish = text.split(marker, maxsplit=1)
+    if "${{ inputs.token }}" in prepare:
+        raise ValueError("prepare step references the write token")
+    if 'GH_TOKEN: ""' not in prepare:
+        raise ValueError("prepare step does not clear GH_TOKEN")
+    if 'GITHUB_TOKEN: ""' not in prepare:
+        raise ValueError("prepare step does not clear GITHUB_TOKEN")
+    if 'GH_TOKEN: "${{ inputs.token }}"' not in publish:
+        raise ValueError("publish step does not receive the write token")
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verify_demo() -> None:
+    path = ROOT / "evidence" / "demo-manifest.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if value.get("schema") != 1:
+        raise ValueError("demo manifest has the wrong schema")
+    for key in (
+        "output",
+        "demo",
+        "poster",
+        "social_preview_source",
+        "social_preview",
+        "invocation",
+        "generator",
+        "skill",
+    ):
+        record = value.get(key)
+        if not isinstance(record, dict):
+            raise ValueError(f"demo manifest is missing: {key}")
+        relative = record.get("path")
+        expected = record.get("sha256")
+        if not isinstance(relative, str):
+            raise ValueError(f"demo path is invalid: {key}")
+        if not isinstance(expected, str):
+            raise ValueError(f"demo checksum is invalid: {key}")
+        if sha256(ROOT / relative) != expected:
+            raise ValueError(f"demo checksum is stale: {key}")
+
+    preview = ROOT / value["social_preview"]["path"]
+    payload = preview.read_bytes()
+    if payload[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("social preview is not a PNG")
+    width, height = struct.unpack(">II", payload[16:24])
+    if (width, height) != (1280, 640):
+        raise ValueError("social preview must be 1280 by 640")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "generate_demo.py"),
+            "--check",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ValueError("demo evidence is not reproducible")
+
+
+def main() -> int:
+    files = repository_files()
+    verify_required_paths()
+    verify_python(files)
+    verify_plugins()
+    verify_lint_manifest()
+    verify_actions(files)
+    verify_action_boundary()
+    verify_demo()
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "tracked_files": len(files),
+                "workflows": 3,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,17 @@
+{
+  "name": "auto-lint-pr",
+  "version": "0.1.0",
+  "description": "Turn pinned lint output into a reviewable pull request through a token-isolated transaction.",
+  "author": {
+    "name": "trycopilot.ai"
+  },
+  "homepage": "https://github.com/trycopilotai/auto-lint-pr",
+  "repository": "https://github.com/trycopilotai/auto-lint-pr",
+  "license": "MIT",
+  "keywords": [
+    "formatting",
+    "github-actions",
+    "pull-request"
+  ],
+  "skills": "./skills/"
+}
