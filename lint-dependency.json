@@ -1,8 +1,8 @@
 {
-  "commit": "3d5d4ee7b83b2c6442039b8a72a571c729ffcead",
+  "commit": "cd1b94a34c4adac4b1512997f0111c78df3614c6",
   "manifest": "lint-release-manifest.json",
-  "manifest_sha256": "6e5472c878e45816a640fa453da78c4a560c7769636dfd542e980bb734eb01df",
-  "ref": "refs/tags/v0.1.4",
+  "manifest_sha256": "bf654f9630af616dad76492ad166ded7c6e49f56a6aca767dc0c6eff2ee84c13",
+  "ref": "refs/tags/v0.1.5",
   "repository": "https://github.com/trycopilotai/lint",
   "schema": 1
 }

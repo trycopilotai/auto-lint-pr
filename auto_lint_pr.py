@@ -249,7 +249,7 @@ def verify_lint_release(
     manifest_path: Path,
 ) -> dict[str, Any]:
     manifest = load_json(manifest_path)
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") not in {1, 2}:
         raise DependencyError("unsupported lint release manifest schema")
     source = manifest.get("source")
     if not isinstance(source, dict):

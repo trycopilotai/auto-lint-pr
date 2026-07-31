@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: trycopilotai/lint
-          ref: 3d5d4ee7b83b2c6442039b8a72a571c729ffcead
+          ref: cd1b94a34c4adac4b1512997f0111c78df3614c6
           token:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false

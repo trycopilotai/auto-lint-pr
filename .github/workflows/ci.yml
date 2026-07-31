@@ -71,7 +71,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Apply pinned lint release without a token
-        uses: trycopilotai/lint@3d5d4ee7b83b2c6442039b8a72a571c729ffcead
+        uses: trycopilotai/lint@cd1b94a34c4adac4b1512997f0111c78df3614c6
         with:
           mode: write
           docker: "false"

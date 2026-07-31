@@ -15,10 +15,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LINT_COMMIT = "3d5d4ee7b83b2c6442039b8a72a571c729ffcead"
+LINT_COMMIT = "cd1b94a34c4adac4b1512997f0111c78df3614c6"
+LINT_IMAGE_COMMIT = "3d5d4ee7b83b2c6442039b8a72a571c729ffcead"
+LINT_IMAGE_MANIFEST_SHA256 = (
+    "6e5472c878e45816a640fa453da78c4a560c7769636dfd542e980bb734eb01df"
+)
 LINT_MANIFEST = "lint-release-manifest.json"
-LINT_REF = "refs/tags/v0.1.4"
+LINT_REF = "refs/tags/v0.1.5"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
+LINT_TAG_OBJECT = "3bd9e69ebf7812bb81992d8be56c17a7dbc47df7"
 
 
 def repository_files() -> list[Path]:
@@ -116,13 +121,17 @@ def verify_plugins() -> None:
 def verify_lint_manifest() -> None:
     path = ROOT / LINT_MANIFEST
     value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("schema_version") != 1:
+    if value.get("schema_version") != 2:
         raise ValueError("lint release manifest has the wrong schema")
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValueError("lint release manifest has no source")
     if source.get("commit") != LINT_COMMIT:
         raise ValueError("lint release manifest has the wrong commit")
+    if source.get("tag") != "v0.1.5":
+        raise ValueError("lint release manifest has the wrong tag")
+    if source.get("tag_object") != LINT_TAG_OBJECT:
+        raise ValueError("lint release manifest has the wrong tag object")
     digest = source.get("sha256")
     if not isinstance(digest, str):
         raise ValueError("lint release archive has no checksum")
@@ -130,15 +139,29 @@ def verify_lint_manifest() -> None:
         raise ValueError("lint release archive checksum is invalid")
     images = value.get("images")
     if not isinstance(images, dict):
+        raise ValueError("lint release manifest has no image record")
+    if images.get("release") != "0.1.4":
+        raise ValueError("lint release manifest has the wrong image release")
+    if images.get("source_commit") != LINT_IMAGE_COMMIT:
+        raise ValueError("lint release manifest has the wrong image commit")
+    inheritance = images.get("inheritance")
+    if not isinstance(inheritance, dict):
+        raise ValueError("lint release manifest has no image inheritance")
+    if inheritance.get("inputs_unchanged") is not True:
+        raise ValueError("lint release image inputs are not verified unchanged")
+    if inheritance.get("prior_manifest_sha256") != LINT_IMAGE_MANIFEST_SHA256:
+        raise ValueError("lint release prior manifest checksum is wrong")
+    digests = images.get("digests")
+    if not isinstance(digests, dict):
         raise ValueError("lint release manifest has no image digests")
-    if len(images) != 26:
+    if len(digests) != 26:
         raise ValueError("lint release manifest must bind 26 images")
-    for image, image_digest in images.items():
+    for image, image_digest in digests.items():
         if not image.startswith("ghcr.io/trycopilotai/lint-"):
             raise ValueError(f"unexpected lint image: {image}")
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
             raise ValueError(f"invalid lint image digest: {image}")
-    if value.get("release") != "0.1.4":
+    if value.get("release") != "0.1.5":
         raise ValueError("lint release manifest has the wrong release")
 
 

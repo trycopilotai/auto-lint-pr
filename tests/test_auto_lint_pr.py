@@ -151,6 +151,32 @@ def prepare_arguments(
 
 
 class CommandTest(unittest.TestCase):
+    def test_lint_release_schema_two_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 2
+            manifest["source"]["tag"] = "v0.1.5"
+            manifest["source"]["tag_object"] = "a" * 40
+            manifest["images"] = {
+                "digests": {},
+                "inheritance": {"inputs_unchanged": True},
+                "release": "0.1.4",
+                "source_commit": "b" * 40,
+            }
+            manifest_path.write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            actual = AUTO_LINT_PR.verify_lint_release(
+                lint_root,
+                manifest_path,
+            )
+
+            self.assertEqual(2, actual["schema_version"])
+
     def test_default_lint_command_is_docker_write_all(self) -> None:
         arguments = AUTO_LINT_PR.parser().parse_args(
             [
