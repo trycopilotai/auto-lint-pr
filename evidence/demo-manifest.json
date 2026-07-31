@@ -1,35 +1,35 @@
 {
-  "schema": 1,
-  "output": {
-    "path": "evidence/demo-transcript.txt",
-    "sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85"
-  },
   "demo": {
     "path": "assets/demo.svg",
     "sha256": "01a9ca89b435974560fa5b5715ced343cc32b4059743b7c464543293075382ff"
   },
-  "poster": {
-    "path": "assets/poster.svg",
-    "sha256": "6c64d1859fdcdfa101ea28abb0a73f0ca087884c83534799b314f5fb7d54082b"
-  },
-  "social_preview_source": {
-    "path": "assets/social-preview.svg",
-    "sha256": "4edad4481e4d955cd3842984bfd5a367e740c79121095543ece47e0def6638a7"
-  },
-  "social_preview": {
-    "path": "assets/social-preview.png",
-    "sha256": "7daa206ea3fa6e1ca39dfa1849b6ea9997ca04f5d07928599bc2c05982387b6b"
+  "generator": {
+    "path": "scripts/generate_demo.py",
+    "sha256": "2e2b6820819a9dc050276341ecd52328fba56f9babdb7cac6766e40c13c84f44"
   },
   "invocation": {
     "path": "scripts/demo.sh",
     "sha256": "1a829a627813b7491480e6cc0b58218d0ea2285808210b21415f9fd7ff8287e9"
   },
-  "generator": {
-    "path": "scripts/generate_demo.py",
-    "sha256": "c7049edf4055c6184650649d758dcb7a360f4cfea6e585ec2f7bbdd048b30cce"
+  "output": {
+    "path": "evidence/demo-transcript.txt",
+    "sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85"
   },
+  "poster": {
+    "path": "assets/poster.svg",
+    "sha256": "6c64d1859fdcdfa101ea28abb0a73f0ca087884c83534799b314f5fb7d54082b"
+  },
+  "schema": 1,
   "skill": {
     "path": "skills/auto-lint-pr/SKILL.md",
-    "sha256": "da64adf08aef842cb3a64d3a85bf65b39dd10380ef1141fdb953683eb30ed774"
+    "sha256": "89d92c85e3e27cbb9b8b4eeb7df95060dc44e78358e264a0f2e6d5ade3f85733"
+  },
+  "social_preview": {
+    "path": "assets/social-preview.png",
+    "sha256": "7daa206ea3fa6e1ca39dfa1849b6ea9997ca04f5d07928599bc2c05982387b6b"
+  },
+  "social_preview_source": {
+    "path": "assets/social-preview.svg",
+    "sha256": "4edad4481e4d955cd3842984bfd5a367e740c79121095543ece47e0def6638a7"
   }
 }
