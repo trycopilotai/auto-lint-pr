@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280"
+  height="640" viewBox="0 0 1280 640" role="img"
+  aria-labelledby="title description">
+  <title id="title">auto-lint-pr</title>
+  <desc id="description">
+    Turn pinned lint output into a reviewable pull request.
+  </desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0"
+      x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020" />
+      <stop offset="1" stop-color="#172554" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#background)" />
+  <rect x="78" y="78" width="1124" height="484" rx="38"
+    fill="#111936" stroke="#40518a" stroke-width="2" />
+  <text x="138" y="220" fill="#91a7ff"
+    font-family="Courier New" font-size="34">
+    trycopilotai
+  </text>
+  <text x="138" y="330" fill="#f5f7ff"
+    font-family="Verdana" font-size="78"
+    font-weight="700">
+    auto-lint-pr
+  </text>
+  <text x="138" y="410" fill="#cbd5ff"
+    font-family="Verdana" font-size="34">
+    token-free formatting · exact-delta publishing
+  </text>
+  <path d="M142 482 H1138" stroke="#57d39b"
+    stroke-width="10" stroke-linecap="round" />
+</svg>

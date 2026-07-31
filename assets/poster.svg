@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280"
+  height="640" viewBox="0 0 1280 640" role="img"
+  aria-labelledby="title description">
+  <title id="title">auto-lint-pr</title>
+  <desc id="description">
+    Formatter output crosses a verified boundary before
+    publication as a pull request.
+  </desc>
+  <rect width="1280" height="640" fill="#0b1020" />
+  <rect x="72" y="72" width="1136" height="496" rx="32"
+    fill="#111936" stroke="#33426f" stroke-width="2" />
+  <text x="128" y="194" fill="#91a7ff"
+    font-family="Courier New" font-size="30">
+    TOKEN-FREE PREPARE
+  </text>
+  <text x="128" y="278" fill="#f5f7ff"
+    font-family="Verdana" font-size="58"
+    font-weight="700">
+    format → verify exact delta
+  </text>
+  <path d="M180 378 H1100" stroke="#57d39b"
+    stroke-width="12" stroke-linecap="round" />
+  <circle cx="640" cy="378" r="28" fill="#57d39b" />
+  <text x="128" y="482" fill="#cbd5ff"
+    font-family="Courier New" font-size="30">
+    WRITE TOKEN ARRIVES ONLY FOR PUBLISH
+  </text>
+</svg>

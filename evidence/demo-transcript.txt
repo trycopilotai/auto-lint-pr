@@ -1,0 +1,8 @@
+$ python3 auto_lint_pr.py prepare --lint-root <pinned-lint>
+prepare phase: success
+formatter credentials: absent
+base commit recorded: True
+branch: auto-lint/main
+changed: true
+exact delta: sample.txt
+publish phase: not run in this token-free demo

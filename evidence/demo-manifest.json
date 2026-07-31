@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "output": {
+    "path": "evidence/demo-transcript.txt",
+    "sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85"
+  },
+  "demo": {
+    "path": "assets/demo.svg",
+    "sha256": "01a9ca89b435974560fa5b5715ced343cc32b4059743b7c464543293075382ff"
+  },
+  "poster": {
+    "path": "assets/poster.svg",
+    "sha256": "6c64d1859fdcdfa101ea28abb0a73f0ca087884c83534799b314f5fb7d54082b"
+  },
+  "social_preview_source": {
+    "path": "assets/social-preview.svg",
+    "sha256": "4edad4481e4d955cd3842984bfd5a367e740c79121095543ece47e0def6638a7"
+  },
+  "social_preview": {
+    "path": "assets/social-preview.png",
+    "sha256": "7daa206ea3fa6e1ca39dfa1849b6ea9997ca04f5d07928599bc2c05982387b6b"
+  },
+  "invocation": {
+    "path": "scripts/demo.sh",
+    "sha256": "1a829a627813b7491480e6cc0b58218d0ea2285808210b21415f9fd7ff8287e9"
+  },
+  "generator": {
+    "path": "scripts/generate_demo.py",
+    "sha256": "c7049edf4055c6184650649d758dcb7a360f4cfea6e585ec2f7bbdd048b30cce"
+  },
+  "skill": {
+    "path": "skills/auto-lint-pr/SKILL.md",
+    "sha256": "3f6d46298a96d0998b30c967257a43fdc72b437fd2a7fc4bb334772f0e41ba82"
+  }
+}
