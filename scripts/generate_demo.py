@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TRANSCRIPT_PATH = ROOT / "evidence" / "demo-transcript.txt"
 DEMO_PATH = ROOT / "assets" / "demo.svg"
+MANIFEST_PATH = ROOT / "evidence" / "demo-manifest.json"
 TOKEN_NAMES = (
     "GITHUB_TOKEN",
     "GH_TOKEN",
@@ -214,6 +215,32 @@ def render_svg(payload: str) -> str:
 """
 
 
+def artifact_record(relative: str) -> dict[str, str]:
+    """Return one path and checksum record for deterministic evidence."""
+
+    return {
+        "path": relative,
+        "sha256": sha256(ROOT / relative),
+    }
+
+
+def demo_manifest() -> str:
+    """Derive the evidence manifest from the artifacts that own each fact."""
+
+    value = {
+        "demo": artifact_record("assets/demo.svg"),
+        "generator": artifact_record("scripts/generate_demo.py"),
+        "invocation": artifact_record("scripts/demo.sh"),
+        "output": artifact_record("evidence/demo-transcript.txt"),
+        "poster": artifact_record("assets/poster.svg"),
+        "schema": 1,
+        "skill": artifact_record("skills/auto-lint-pr/SKILL.md"),
+        "social_preview": artifact_record("assets/social-preview.png"),
+        "social_preview_source": artifact_record("assets/social-preview.svg"),
+    }
+    return json.dumps(value, indent=2) + "\n"
+
+
 def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser()
     argument_parser.add_argument("--check", action="store_true")
@@ -232,6 +259,9 @@ def main() -> int:
         if DEMO_PATH.read_text(encoding="utf-8") != svg:
             print("demo SVG is stale", file=sys.stderr)
             return 1
+        if MANIFEST_PATH.read_text(encoding="utf-8") != demo_manifest():
+            print("demo manifest is stale", file=sys.stderr)
+            return 1
         return 0
     if not arguments.write:
         print(payload, end="")
@@ -240,6 +270,7 @@ def main() -> int:
     DEMO_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRANSCRIPT_PATH.write_text(payload, encoding="utf-8")
     DEMO_PATH.write_text(svg, encoding="utf-8")
+    MANIFEST_PATH.write_text(demo_manifest(), encoding="utf-8")
     return 0
 
 

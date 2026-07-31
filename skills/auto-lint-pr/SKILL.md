@@ -31,8 +31,12 @@ Do not move private checks into the public lint dependency.
 
 Keep the formatter and optional hook in the prepare phase.
 They must not receive `GITHUB_TOKEN`, `GH_TOKEN`, or Actions
-runtime credentials. The publish phase may receive the write
-token only after the exact delta has been recorded.
+runtime credentials or runner command-file paths. Run
+prepare in a read-only job. Run publish in a fresh job with
+fresh checkouts after transferring only the prepared state
+artifact. Its first token-free substep restores and verifies
+the exact delta; its next substep may receive the write
+token.
 
 Use a local checkout of the composite action when direct
 cross-repository workflow references are not approved. Check
@@ -47,11 +51,18 @@ Grant only:
 ```yaml
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 ```
 
 Place these permissions on the calling job. A reusable
 workflow cannot elevate the caller's token permissions.
+`issues: write` is required when labels are requested.
+
+Before the first run, confirm the repository or organization
+Actions setting **Allow GitHub Actions to create and approve
+pull requests** is on. Token permissions do not change this
+independent setting.
 
 Set `persist-credentials: false` on every checkout. Use
 concurrency keyed by repository and base branch. Do not use
@@ -66,6 +77,11 @@ dependencies are private. Never pass that credential to the
 composite action; publication must use the consumer
 repository's `github.token` so the resulting commit is
 authored by `github-actions[bot]`.
+
+Do not place the prepare and publish phases in one job. Do
+not replace the cross-job state artifact with `GITHUB_ENV`,
+`GITHUB_PATH`, a workspace action checkout, or another
+formatter-writable channel.
 
 ## Verify
 

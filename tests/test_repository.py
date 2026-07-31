@@ -12,12 +12,13 @@ class ActionMetadataTest(unittest.TestCase):
     def test_token_is_only_in_publish_step(self) -> None:
         text = (ROOT / "action.yml").read_text(encoding="utf-8")
         prepare, publish = text.split(
-            "    - name: Publish exact prepared delta",
+            "    - name: Publish exact verified delta",
             maxsplit=1,
         )
 
         self.assertNotIn("${{ inputs.token }}", prepare)
         self.assertIn('GH_TOKEN: ""', prepare)
+        self.assertEqual(2, prepare.count('INPUT_TOKEN: ""'))
         self.assertIn(
             'GH_TOKEN: "${{ inputs.token }}"',
             publish,
@@ -33,6 +34,8 @@ class ActionMetadataTest(unittest.TestCase):
             "hook:",
             "labels:",
             "reviewers:",
+            "state-path:",
+            "verification-path:",
         )
         for value in required:
             self.assertIn(value, text)
@@ -46,6 +49,7 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("workflow_call:", text)
         self.assertIn("persist-credentials: false", text)
         self.assertIn("pull-requests: write", text)
+        self.assertIn("issues: write", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("secrets.checkout_token", text)
         self.assertIn('token: "${{ github.token }}"', text)
@@ -57,15 +61,24 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertNotIn("github.workflow_sha", text)
         self.assertNotIn("secrets.token", text)
         self.assertNotIn("pull_request_target", text)
+        self.assertIn("needs: prepare", text)
+        self.assertIn("actions/upload-artifact@", text)
+        self.assertIn("actions/download-artifact@", text)
+        prepare, publish = text.split("\n  publish:\n", maxsplit=1)
+        self.assertNotIn('token: "${{ github.token }}"', prepare)
+        self.assertIn('token: "${{ github.token }}"', publish)
 
     def test_readme_requires_caller_write_permissions(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        marker = "The calling job must grant both write permissions"
+        marker = "The calling job must grant the workflow's write permissions"
         self.assertIn(marker, text)
         reusable = text.split("## Reusable workflow", maxsplit=1)[1]
         self.assertIn("contents: write", reusable)
+        self.assertIn("issues: write", reusable)
         self.assertIn("pull-requests: write", reusable)
+        self.assertIn("Allow GitHub Actions to create and approve", reusable)
+        self.assertIn("pull requests", reusable)
 
     def test_external_actions_use_commit_references(self) -> None:
         pattern = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")

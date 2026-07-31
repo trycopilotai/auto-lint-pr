@@ -36,6 +36,7 @@ class ActionCommandTest(unittest.TestCase):
             "GITHUB_REPOSITORY": "owner/repository",
             "LINT_ROOT": "/lint",
             "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
             "INPUT_BASE": "main",
             "INPUT_CWD": ".",
             "INPUT_DOCKER": "true",
@@ -57,6 +58,7 @@ class ActionCommandTest(unittest.TestCase):
             "GITHUB_REPOSITORY": "owner/repository",
             "LINT_ROOT": "/lint",
             "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
             "INPUT_BASE": "main",
             "INPUT_CWD": ".",
             "INPUT_DOCKER": "true",
@@ -74,6 +76,7 @@ class ActionCommandTest(unittest.TestCase):
             "GITHUB_REPOSITORY": "owner/repository",
             "LINT_ROOT": "/lint",
             "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
             "INPUT_BASE": "main",
             "INPUT_CWD": ".",
             "INPUT_DOCKER": "true",
@@ -85,6 +88,25 @@ class ActionCommandTest(unittest.TestCase):
 
         self.assertNotIn("--hook", command)
         self.assertNotIn("--modified", command)
+        self.assertIn("--verification", command)
+        self.assertNotIn("--restore", command)
+
+    def test_verify_restores_before_publication(self) -> None:
+        environment = {
+            "GITHUB_ACTION_PATH": str(ROOT),
+            "GITHUB_REPOSITORY": "owner/repository",
+            "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
+            "INPUT_BASE": "main",
+            "INPUT_CWD": ".",
+            "INPUT_HOOK": "make generate",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            command = ENTRYPOINT.command("verify")
+
+        self.assertIn("--restore", command)
+        self.assertIn("--verification", command)
+        self.assertNotIn("--hook", command)
 
     def test_selection_inputs_are_mutually_exclusive(self) -> None:
         environment = {
@@ -92,6 +114,7 @@ class ActionCommandTest(unittest.TestCase):
             "GITHUB_REPOSITORY": "owner/repository",
             "LINT_ROOT": "/lint",
             "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
             "INPUT_BASE": "main",
             "INPUT_CWD": ".",
             "INPUT_DOCKER": "true",

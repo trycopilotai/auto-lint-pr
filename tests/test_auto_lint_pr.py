@@ -234,6 +234,11 @@ class IsolationTest(unittest.TestCase):
             "GH_TOKEN": "gh-token",
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "id-token",
             "ACTIONS_RUNTIME_TOKEN": "runtime-token",
+            "GITHUB_ACTION_PATH": "/action",
+            "GITHUB_ENV": "/commands/environment",
+            "GITHUB_OUTPUT": "/commands/output",
+            "GITHUB_PATH": "/commands/path",
+            "PYTHONPATH": "/poison",
             "PATH": "/bin",
         }
 
@@ -244,6 +249,11 @@ class IsolationTest(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", isolated)
         self.assertNotIn("ACTIONS_ID_TOKEN_REQUEST_TOKEN", isolated)
         self.assertNotIn("ACTIONS_RUNTIME_TOKEN", isolated)
+        self.assertNotIn("GITHUB_ACTION_PATH", isolated)
+        self.assertNotIn("GITHUB_ENV", isolated)
+        self.assertNotIn("GITHUB_OUTPUT", isolated)
+        self.assertNotIn("GITHUB_PATH", isolated)
+        self.assertNotIn("PYTHONPATH", isolated)
 
 
 class BranchSafetyTest(unittest.TestCase):
@@ -600,6 +610,11 @@ for name in (
     "GH_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_RUNTIME_TOKEN",
+    "GITHUB_ACTION_PATH",
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+    "GITHUB_PATH",
+    "PYTHONPATH",
 ):
     if os.environ.get(name):
         raise SystemExit(92)
@@ -625,6 +640,11 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
             environment = {
                 "GH_TOKEN": "gh-token",
                 "GITHUB_TOKEN": "github-token",
+                "GITHUB_ACTION_PATH": "/action",
+                "GITHUB_ENV": "/commands/environment",
+                "GITHUB_OUTPUT": str(root / "output"),
+                "GITHUB_PATH": "/commands/path",
+                "PYTHONPATH": "/poison",
             }
 
             with mock.patch.dict(os.environ, environment, clear=False):
@@ -815,6 +835,129 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
             self.assertFalse(capture.exists())
 
+    def test_verify_restores_and_receipts_a_fresh_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8")
+            records = AUTO_LINT_PR.delta_records(repository)
+            run_git(repository, "restore", "sample.txt")
+            state_path = root / "state.json"
+            state = {
+                "base": "main",
+                "base_head": head,
+                "branch": "auto-lint/main",
+                "changed": True,
+                "cwd": "/previous/runner/workspace",
+                "delta": records,
+                "lint_commit": "pinned",
+                "repository": "owner/repository",
+                "schema": 1,
+            }
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            verification = root / "verified.json"
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "verify",
+                    "--cwd",
+                    str(repository),
+                    "--state",
+                    str(state_path),
+                    "--verification",
+                    str(verification),
+                    "--restore",
+                ]
+            )
+
+            receipt = AUTO_LINT_PR.run_verify(arguments)
+
+            self.assertEqual("after\n", sample.read_text(encoding="utf-8"))
+            self.assertEqual(AUTO_LINT_PR.sha256(state_path), receipt["state_sha256"])
+            self.assertEqual(str(repository.resolve()), receipt["cwd"])
+            self.assertEqual(
+                receipt,
+                json.loads(verification.read_text(encoding="utf-8")),
+            )
+
+    def test_publish_rejects_state_changed_after_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8")
+            state_path = root / "state.json"
+            state = {
+                "base": "main",
+                "base_head": head,
+                "branch": "auto-lint/main",
+                "changed": True,
+                "cwd": str(repository),
+                "delta": AUTO_LINT_PR.delta_records(repository),
+                "lint_commit": "pinned",
+                "repository": "owner/repository",
+                "schema": 1,
+            }
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            verification = root / "verified.json"
+            verify_arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "verify",
+                    "--cwd",
+                    str(repository),
+                    "--state",
+                    str(state_path),
+                    "--verification",
+                    str(verification),
+                ]
+            )
+            AUTO_LINT_PR.run_verify(verify_arguments)
+            state_path.write_text(
+                state_path.read_text(encoding="utf-8") + "\n",
+                encoding="utf-8",
+            )
+            publish_arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--cwd",
+                    str(repository),
+                    "--state",
+                    str(state_path),
+                    "--verification",
+                    str(verification),
+                ]
+            )
+
+            with mock.patch.object(AUTO_LINT_PR, "require_token") as token:
+                with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                    AUTO_LINT_PR.run_publish(publish_arguments)
+
+            token.assert_not_called()
+
+    def test_restore_refuses_a_path_outside_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            payload = b"outside\n"
+            record = {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "../outside.txt",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+
+            with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                AUTO_LINT_PR.restore_prepared_delta(repository, [record])
+
+            self.assertFalse((Path(directory) / "outside.txt").exists())
+
     def test_formatter_failure_stops_before_publish(self) -> None:
         with mock.patch.object(
             AUTO_LINT_PR,
@@ -827,7 +970,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             ) as publish:
                 error = io.StringIO()
                 with contextlib.redirect_stderr(error):
-                    status = AUTO_LINT_PR.main(["run", "--lint-root", "/unused"])
+                    status = AUTO_LINT_PR.main(["prepare", "--lint-root", "/unused"])
 
         self.assertEqual(1, status)
         self.assertEqual("formatter failed\n", error.getvalue())

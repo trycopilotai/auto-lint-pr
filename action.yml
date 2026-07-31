@@ -3,14 +3,27 @@ description:
   "Turn pinned formatter output into a reviewable pull
   request"
 inputs:
+  phase:
+    description:
+      "Transaction phase; prepare must run in a job without
+      write permissions, and publish in a fresh job"
+    required: false
+    default: "prepare"
   token:
     description:
       "Repository-scoped Actions token used only by the
       publish step"
-    required: true
+    required: false
   lint-root:
     description:
       "Path to the pinned trycopilotai/lint checkout"
+    required: false
+    default: ""
+  state-path:
+    description: "Cross-job transaction state artifact path"
+    required: true
+  verification-path:
+    description: "Token-free verification receipt path"
     required: true
   cwd:
     description: "Consumer repository working directory"
@@ -68,15 +81,30 @@ outputs:
     description: "Whether a formatting delta was published"
     value:
       "${{ steps.publish.outputs.changed ||
+      steps.verify.outputs.changed ||
       steps.prepare.outputs.changed }}"
+  base-head:
+    description: "Exact consumer base commit"
+    value:
+      "${{ steps.verify.outputs.base-head ||
+      steps.prepare.outputs.base-head }}"
   pull-request:
     description: "Created or updated pull request number"
     value: "${{ steps.publish.outputs.pull-request }}"
 runs:
   using: "composite"
   steps:
+    - name: Validate transaction phase
+      if: >-
+        inputs.phase != 'prepare' && inputs.phase !=
+        'publish'
+      shell: bash
+      run: |
+        printf '%s\n' "phase must be prepare or publish" >&2
+        exit 2
     - name: Prepare token-free formatting delta
       id: prepare
+      if: inputs.phase == 'prepare'
       shell: bash
       env:
         GH_TOKEN: ""
@@ -93,15 +121,32 @@ runs:
         INPUT_PATHS: "${{ inputs.paths }}"
         INPUT_REVIEWERS: "${{ inputs.reviewers }}"
         INPUT_TITLE: "${{ inputs.title }}"
+        INPUT_TOKEN: ""
         LINT_ROOT: "${{ inputs.lint-root }}"
-        STATE_PATH:
-          "${{ runner.temp }}/auto-lint-pr-state.json"
+        STATE_PATH: "${{ inputs.state-path }}"
       run: >-
         python3 "$GITHUB_ACTION_PATH/action_entrypoint.py"
         prepare
-    - name: Publish exact prepared delta
+    - name: Restore and verify exact prepared delta
+      id: verify
+      if: inputs.phase == 'publish'
+      shell: bash
+      env:
+        GH_TOKEN: ""
+        GITHUB_TOKEN: ""
+        INPUT_BASE: "${{ inputs.base }}"
+        INPUT_CWD: "${{ inputs.cwd }}"
+        INPUT_TOKEN: ""
+        STATE_PATH: "${{ inputs.state-path }}"
+        VERIFICATION_PATH: "${{ inputs.verification-path }}"
+      run: >-
+        python3 "$GITHUB_ACTION_PATH/action_entrypoint.py"
+        verify
+    - name: Publish exact verified delta
       id: publish
-      if: steps.prepare.outputs.changed == 'true'
+      if: >-
+        inputs.phase == 'publish' &&
+        steps.verify.outputs.changed == 'true'
       shell: bash
       env:
         GH_TOKEN: "${{ inputs.token }}"
@@ -111,9 +156,8 @@ runs:
         INPUT_LABELS: "${{ inputs.labels }}"
         INPUT_REVIEWERS: "${{ inputs.reviewers }}"
         INPUT_TITLE: "${{ inputs.title }}"
-        LINT_ROOT: "${{ inputs.lint-root }}"
-        STATE_PATH:
-          "${{ runner.temp }}/auto-lint-pr-state.json"
+        STATE_PATH: "${{ inputs.state-path }}"
+        VERIFICATION_PATH: "${{ inputs.verification-path }}"
       run: >-
         python3 "$GITHUB_ACTION_PATH/action_entrypoint.py"
         publish

@@ -37,10 +37,6 @@ def command(phase: str) -> list[str]:
         sys.executable,
         str(action_path / "auto_lint_pr.py"),
         phase,
-        "--lint-root",
-        os.environ["LINT_ROOT"],
-        "--manifest",
-        str(action_path / "lint-release-manifest.json"),
         "--cwd",
         os.environ.get("INPUT_CWD", "."),
         "--base",
@@ -50,6 +46,25 @@ def command(phase: str) -> list[str]:
         "--state",
         os.environ["STATE_PATH"],
     ]
+    if phase == "prepare":
+        arguments.extend(
+            [
+                "--lint-root",
+                os.environ["LINT_ROOT"],
+                "--manifest",
+                str(action_path / "lint-release-manifest.json"),
+            ]
+        )
+    if phase in {"verify", "publish"}:
+        arguments.extend(
+            [
+                "--verification",
+                os.environ["VERIFICATION_PATH"],
+            ]
+        )
+    if phase == "verify":
+        arguments.append("--restore")
+        return arguments
     for label in comma_values("INPUT_LABELS"):
         arguments.extend(["--label", label])
     for reviewer in comma_values("INPUT_REVIEWERS"):
@@ -94,8 +109,9 @@ def command(phase: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2 or argv[1] not in {"prepare", "publish"}:
-        print("usage: action_entrypoint.py prepare|publish", file=sys.stderr)
+    phases = {"prepare", "verify", "publish"}
+    if len(argv) != 2 or argv[1] not in phases:
+        print("usage: action_entrypoint.py prepare|verify|publish", file=sys.stderr)
         return 2
     try:
         completed = subprocess.run(command(argv[1]), check=False)

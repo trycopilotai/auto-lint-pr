@@ -11,6 +11,12 @@ later public launch operations.
 - Keep the GitHub Release in draft state.
 - Keep repository and package visibility private.
 - Confirm that no `latest` alias exists.
+- Confirm prepare and publish use separate jobs, with the
+  state artifact as their only formatter-controlled bridge.
+- Confirm the publish job restores and verifies the state
+  before its credentialed substep.
+- Confirm the target repository's Actions setting permits
+  GitHub Actions to create pull requests.
 
 GitHub-hosted artifact attestations are rerun after public
 visibility because the private repository plan does not

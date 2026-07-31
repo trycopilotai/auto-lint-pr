@@ -12,7 +12,9 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 
@@ -25,6 +27,18 @@ TOKEN_NAMES = (
     "GH_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_RUNTIME_TOKEN",
+)
+ACTION_COMMAND_NAMES = (
+    "BASH_ENV",
+    "ENV",
+    "GITHUB_ACTION_PATH",
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+    "GITHUB_PATH",
+    "GITHUB_STATE",
+    "GITHUB_STEP_SUMMARY",
+    "PYTHONHOME",
+    "PYTHONPATH",
 )
 REPOSITORY_PATTERN = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/" r"[A-Za-z0-9_.-]+"
@@ -54,12 +68,12 @@ def parser() -> argparse.ArgumentParser:
     argument_parser.add_argument(
         "phase",
         nargs="?",
-        choices=("run", "prepare", "publish"),
-        default="run",
+        choices=("prepare", "verify", "publish"),
+        default="prepare",
     )
     argument_parser.add_argument("paths", nargs="*")
-    argument_parser.add_argument("--cwd", default=".")
-    argument_parser.add_argument("--lint-root", required=True)
+    argument_parser.add_argument("--cwd")
+    argument_parser.add_argument("--lint-root")
     argument_parser.add_argument(
         "--manifest",
         default=str(DEFAULT_MANIFEST),
@@ -102,6 +116,8 @@ def parser() -> argparse.ArgumentParser:
         "--state",
         default=".git/auto-lint-pr-state.json",
     )
+    argument_parser.add_argument("--verification")
+    argument_parser.add_argument("--restore", action="store_true")
     argument_parser.add_argument(
         "--title",
         default="Apply automated formatting",
@@ -120,7 +136,7 @@ def token_free_environment(
     environment: Mapping[str, str],
 ) -> dict[str, str]:
     isolated = dict(environment)
-    for name in TOKEN_NAMES:
+    for name in TOKEN_NAMES + ACTION_COMMAND_NAMES:
         isolated.pop(name, None)
     return isolated
 
@@ -157,13 +173,18 @@ def validate_selection(arguments: argparse.Namespace) -> None:
 
 def lint_command(arguments: argparse.Namespace) -> list[str]:
     validate_selection(arguments)
+    if arguments.lint_root is None:
+        raise SafetyError("prepare requires --lint-root")
     lint_root = Path(arguments.lint_root).resolve()
+    cwd = "."
+    if arguments.cwd is not None:
+        cwd = arguments.cwd
     command = [
         sys.executable,
         str(lint_root / "lint.py"),
         "--write",
         "--cwd",
-        str(Path(arguments.cwd).resolve()),
+        str(Path(cwd).resolve()),
     ]
     if arguments.docker:
         command.append("--docker")
@@ -397,6 +418,91 @@ def prepared_payload(record: dict[str, str]) -> bytes:
     return payload
 
 
+def canonical_sha256(value: Any) -> str:
+    """Hash one value using the transaction's canonical JSON codec."""
+
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def prepared_relative_path(value: Any) -> PurePosixPath:
+    """Validate one canonical Git worktree path from a state artifact."""
+
+    if not isinstance(value, str) or value == "":
+        raise SafetyError("prepared path must be a non-empty string")
+    if "\0" in value or "\\" in value:
+        raise SafetyError(f"prepared path is not canonical: {value!r}")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or relative.as_posix() != value:
+        raise SafetyError(f"prepared path is not canonical: {value!r}")
+    for component in relative.parts:
+        if component in {"", ".", ".."}:
+            raise SafetyError(f"prepared path escapes the repository: {value!r}")
+        if component.casefold() == ".git":
+            raise SafetyError(f"prepared path targets Git metadata: {value!r}")
+    return relative
+
+
+def safe_worktree_path(repository: Path, value: Any) -> Path:
+    """Resolve a prepared path without following a worktree symlink."""
+
+    relative = prepared_relative_path(value)
+    current = repository.resolve()
+    for component in relative.parts[:-1]:
+        current = current / component
+        if current.exists() or current.is_symlink():
+            if current.is_symlink() or not current.is_dir():
+                raise SafetyError(f"prepared path has an unsafe parent: {value!r}")
+        else:
+            current.mkdir(mode=0o755)
+    target = current / relative.parts[-1]
+    if target.is_symlink():
+        raise SafetyError(f"prepared path is a symlink: {value!r}")
+    if not target.parent.resolve().is_relative_to(repository.resolve()):
+        raise SafetyError(f"prepared path escapes the repository: {value!r}")
+    return target
+
+
+def restore_prepared_delta(
+    repository: Path,
+    records: list[dict[str, str]],
+) -> None:
+    """Materialize recorded bytes into a clean checkout without credentials."""
+
+    validate_prepared_modes(records)
+    for record in records:
+        target = safe_worktree_path(repository, record.get("path"))
+        if record["kind"] == "deleted":
+            if not target.is_file() or target.is_symlink():
+                raise SafetyError(f"prepared deletion is not a regular file: {target}")
+            if target.stat().st_mode & 0o111:
+                raise SafetyError(f"prepared deletion changes an executable: {target}")
+            target.unlink()
+            continue
+        payload = prepared_payload(record)
+        if target.exists() and not target.is_file():
+            raise SafetyError(f"prepared destination is not a regular file: {target}")
+        temporary_name = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent,
+                prefix=".auto-lint-pr-",
+                delete=False,
+            ) as handle:
+                handle.write(payload)
+                temporary_name = handle.name
+            os.chmod(temporary_name, 0o644)
+            os.replace(temporary_name, target)
+        finally:
+            if temporary_name != "" and Path(temporary_name).exists():
+                Path(temporary_name).unlink()
+
+
 def ensure_clean(repository: Path) -> None:
     if changed_paths(repository):
         raise SafetyError("repository must be clean before formatting")
@@ -443,7 +549,10 @@ def run_checked(
 def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
     refuse_pull_request_target(os.environ)
     isolated = token_free_environment(os.environ)
-    cwd = Path(arguments.cwd).resolve()
+    cwd_value = "."
+    if arguments.cwd is not None:
+        cwd_value = arguments.cwd
+    cwd = Path(cwd_value).resolve()
     repository = repository_root(cwd)
     ensure_clean(repository)
     base_head = git(
@@ -452,6 +561,8 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         "HEAD",
         environment=isolated,
     ).stdout.strip()
+    if arguments.lint_root is None:
+        raise SafetyError("prepare requires --lint-root")
     lint_root = Path(arguments.lint_root).resolve()
     manifest = verify_lint_release(
         lint_root,
@@ -492,8 +603,143 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
     }
     write_canonical(Path(arguments.state).resolve(), state)
     write_action_output("changed", str(bool(records)).lower())
+    write_action_output("base-head", base_head)
     write_action_output("branch", state["branch"])
     return state
+
+
+def transaction_state(path: Path) -> dict[str, Any]:
+    """Load and validate one untrusted cross-job state artifact."""
+
+    state = load_json(path)
+    if state.get("schema") != 1:
+        raise SafetyError("unsupported state schema")
+    for name in ("base", "base_head", "branch", "cwd", "lint_commit"):
+        if not isinstance(state.get(name), str) or state[name] == "":
+            raise SafetyError(f"transaction state has an invalid {name}")
+    if state["branch"] != branch_name(state["base"]):
+        raise SafetyError("transaction branch does not match its base")
+    records = state.get("delta")
+    if not isinstance(records, list):
+        raise SafetyError("transaction delta must be a list")
+    if not isinstance(state.get("changed"), bool):
+        raise SafetyError("transaction changed flag must be boolean")
+    if state["changed"] != bool(records):
+        raise SafetyError("transaction changed flag disagrees with its delta")
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise SafetyError("transaction delta record must be an object")
+        required = {"content", "kind", "mode", "path", "sha256"}
+        if set(record) != required:
+            raise SafetyError("transaction delta record has unexpected fields")
+        for name in required:
+            if not isinstance(record[name], str):
+                raise SafetyError(f"transaction delta has an invalid {name}")
+        relative = prepared_relative_path(record["path"])
+        canonical = relative.as_posix()
+        if canonical in seen:
+            raise SafetyError(f"transaction delta repeats a path: {canonical}")
+        seen.add(canonical)
+        if record["kind"] == "file":
+            prepared_payload(record)
+        elif record["kind"] == "deleted":
+            if record["content"] != "" or record["sha256"] != "":
+                raise SafetyError(f"prepared deletion contains bytes: {canonical}")
+        else:
+            raise SafetyError(f"prepared path has an unsupported kind: {canonical}")
+    validate_prepared_modes(records)
+    repository_name = state.get("repository")
+    if repository_name is not None:
+        if not isinstance(repository_name, str):
+            raise SafetyError("transaction repository must be a string")
+        normalize_repository(repository_name)
+    return state
+
+
+def transaction_repository(
+    arguments: argparse.Namespace,
+    state: dict[str, Any],
+) -> Path:
+    """Resolve the checkout for this phase without trusting an old runner path."""
+
+    value = state["cwd"]
+    if arguments.cwd is not None:
+        value = arguments.cwd
+    return repository_root(Path(value).resolve())
+
+
+def verify_transaction_checkout(
+    repository: Path,
+    state: dict[str, Any],
+    *,
+    restore: bool,
+) -> None:
+    """Recreate and verify the exact prepared delta without credentials."""
+
+    isolated = token_free_environment(os.environ)
+    current_head = git(
+        repository,
+        "rev-parse",
+        "HEAD",
+        environment=isolated,
+    ).stdout.strip()
+    if current_head != state["base_head"]:
+        raise SafetyError("base checkout changed after preparation")
+    if restore:
+        ensure_clean(repository)
+        restore_prepared_delta(repository, state["delta"])
+    assert_delta(repository, state["delta"])
+
+
+def run_verify(arguments: argparse.Namespace) -> dict[str, Any]:
+    """Restore and attest a cross-job delta before any write token is injected."""
+
+    refuse_pull_request_target(os.environ)
+    state_path = Path(arguments.state).resolve()
+    state = transaction_state(state_path)
+    repository = transaction_repository(arguments, state)
+    verify_transaction_checkout(
+        repository,
+        state,
+        restore=arguments.restore,
+    )
+    verification_path = arguments.verification
+    if verification_path is None:
+        verification_path = str(state_path.with_suffix(".verified.json"))
+    receipt = {
+        "base_head": state["base_head"],
+        "cwd": str(repository),
+        "delta_sha256": canonical_sha256(state["delta"]),
+        "schema": 1,
+        "state_sha256": sha256(state_path),
+    }
+    write_canonical(Path(verification_path).resolve(), receipt)
+    write_action_output("base-head", state["base_head"])
+    write_action_output("changed", str(state["changed"]).lower())
+    return receipt
+
+
+def verify_prior_receipt(
+    arguments: argparse.Namespace,
+    state_path: Path,
+    state: dict[str, Any],
+    repository: Path,
+) -> None:
+    """Bind publication to the preceding token-free verification step."""
+
+    if arguments.verification is None:
+        return
+    receipt = load_json(Path(arguments.verification).resolve())
+    expected = {
+        "base_head": state["base_head"],
+        "cwd": str(repository),
+        "delta_sha256": canonical_sha256(state["delta"]),
+        "schema": 1,
+        "state_sha256": sha256(state_path),
+    }
+    if receipt != expected:
+        raise SafetyError("token-free verification receipt does not match")
 
 
 def select_existing_pull_request(
@@ -1103,22 +1349,16 @@ def apply_labels_and_reviewers(
 
 def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
     refuse_pull_request_target(os.environ)
-    isolated = token_free_environment(os.environ)
-    state = load_json(Path(arguments.state).resolve())
-    if state.get("schema") != 1:
-        raise SafetyError("unsupported state schema")
-    repository = Path(state["cwd"]).resolve()
-    if (
-        git(
-            repository,
-            "rev-parse",
-            "HEAD",
-            environment=isolated,
-        ).stdout.strip()
-        != state["base_head"]
-    ):
-        raise SafetyError("base checkout changed after preparation")
-    assert_delta(repository, state["delta"])
+    state_path = Path(arguments.state).resolve()
+    state = transaction_state(state_path)
+    repository = transaction_repository(arguments, state)
+    verify_transaction_checkout(repository, state, restore=False)
+    verify_prior_receipt(
+        arguments,
+        state_path,
+        state,
+        repository,
+    )
     if not state["changed"]:
         result = {"changed": False, "pull_request": None, "schema": 1}
         write_action_output("changed", "false")
@@ -1359,11 +1599,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         result: dict[str, Any]
         if arguments.phase == "prepare":
             result = run_prepare(arguments)
+        elif arguments.phase == "verify":
+            result = run_verify(arguments)
         elif arguments.phase == "publish":
             result = run_publish(arguments)
         else:
-            run_prepare(arguments)
-            result = run_publish(arguments)
+            raise SafetyError("unsupported transaction phase")
     except AutoLintError as error:
         print(str(error), file=sys.stderr)
         return 1

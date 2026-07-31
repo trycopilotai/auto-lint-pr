@@ -74,8 +74,7 @@ on:
         required: false
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group:
@@ -83,8 +82,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  format:
+  prepare:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
+    outputs:
+      base-head: "${{ steps.prepare.outputs.base-head }}"
+      changed: "${{ steps.prepare.outputs.changed }}"
     steps:
       - name: Check out consumer base
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -110,11 +114,16 @@ jobs:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: dependencies/auto-lint-pr
-      - name: Prepare and publish formatting
+      - name: Prepare formatting without write credentials
+        id: prepare
         uses: ./dependencies/auto-lint-pr
         with:
-          token: "${{ github.token }}"
+          phase: prepare
           lint-root: dependencies/lint
+          state-path:
+            "${{ runner.temp }}/auto-lint-state.json"
+          verification-path:
+            "${{ runner.temp }}/auto-lint-verified.json"
           cwd: "workspace/${{ inputs.cwd }}"
           base: "${{ inputs.base }}"
           modified: "${{ inputs.modified }}"
@@ -123,6 +132,59 @@ jobs:
           files-from0: "${{ inputs.files-from0 }}"
           languages: "${{ inputs.languages }}"
           hook: "${{ inputs.hook }}"
+          labels: "${{ inputs.labels }}"
+          reviewers: "${{ inputs.reviewers }}"
+          title: "${{ inputs.title }}"
+          body: "${{ inputs.body }}"
+      - name: Upload exact prepared transaction
+        if: steps.prepare.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: auto-lint-pr-state
+          path: "${{ runner.temp }}/auto-lint-state.json"
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact consumer base
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: "${{ needs.prepare.outputs.base-head }}"
+          persist-credentials: false
+          path: workspace
+      - name: Check out this action revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: "${{ job.workflow_repository }}"
+          ref: "${{ job.workflow_sha }}"
+          token:
+            "${{ secrets.checkout_token || github.token }}"
+          persist-credentials: false
+          path: dependencies/auto-lint-pr
+      - name: Download prepared transaction
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: auto-lint-pr-state
+          path: "${{ runner.temp }}"
+      - name: Verify then publish in the fresh job
+        uses: ./dependencies/auto-lint-pr
+        with:
+          phase: publish
+          token: "${{ github.token }}"
+          state-path:
+            "${{ runner.temp }}/auto-lint-state.json"
+          verification-path:
+            "${{ runner.temp }}/auto-lint-verified.json"
+          cwd: "workspace/${{ inputs.cwd }}"
+          base: "${{ inputs.base }}"
           labels: "${{ inputs.labels }}"
           reviewers: "${{ inputs.reviewers }}"
           title: "${{ inputs.title }}"

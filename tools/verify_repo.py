@@ -187,11 +187,26 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("reusable workflow uses the caller workflow revision")
     if "secrets.token" in reusable:
         raise ValueError("one credential cannot serve checkout and publication")
+    if "\n  publish:\n" not in reusable:
+        raise ValueError("reusable workflow has no isolated publish job")
+    prepare, publish = reusable.split("\n  publish:\n", maxsplit=1)
+    if 'token: "${{ github.token }}"' in prepare:
+        raise ValueError("prepare job receives the publication token")
+    if 'token: "${{ github.token }}"' not in publish:
+        raise ValueError("publish job does not receive the repository token")
+    if "actions/upload-artifact@" not in prepare:
+        raise ValueError("prepare job does not upload its state artifact")
+    if "actions/download-artifact@" not in publish:
+        raise ValueError("publish job does not download its state artifact")
+    if "needs: prepare" not in publish:
+        raise ValueError("publish job is not ordered after prepare")
+    if "issues: write" not in publish:
+        raise ValueError("publish job cannot apply labels")
 
 
 def verify_action_boundary() -> None:
     text = (ROOT / "action.yml").read_text(encoding="utf-8")
-    marker = "    - name: Publish exact prepared delta"
+    marker = "    - name: Publish exact verified delta"
     if marker not in text:
         raise ValueError("action publish step is missing")
     prepare, publish = text.split(marker, maxsplit=1)
@@ -201,8 +216,20 @@ def verify_action_boundary() -> None:
         raise ValueError("prepare step does not clear GH_TOKEN")
     if 'GITHUB_TOKEN: ""' not in prepare:
         raise ValueError("prepare step does not clear GITHUB_TOKEN")
+    if prepare.count('INPUT_TOKEN: ""') != 2:
+        raise ValueError("token-free steps do not clear the action token input")
+    if "    - name: Restore and verify exact prepared delta" not in prepare:
+        raise ValueError("action does not verify the delta before token injection")
     if 'GH_TOKEN: "${{ inputs.token }}"' not in publish:
         raise ValueError("publish step does not receive the write token")
+    implementation = (ROOT / "auto_lint_pr.py").read_text(encoding="utf-8")
+    for name in ("GITHUB_ACTION_PATH", "GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH"):
+        if f'"{name}"' not in implementation:
+            raise ValueError(f"token-free child environment retains {name}")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    setting = "Allow GitHub Actions to create and approve"
+    if setting not in readme:
+        raise ValueError("README omits the pull-request creation setting")
 
 
 def sha256(path: Path) -> str:

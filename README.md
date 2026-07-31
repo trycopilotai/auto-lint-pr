@@ -5,14 +5,15 @@ Turn pinned
 formatter output into a reviewable pull request without
 granting the formatter step a write token.
 
-The transaction has two phases:
+The transaction has two credential phases:
 
 1. A token-free phase verifies the pinned lint release,
    applies formatting, optionally runs one consumer command,
    and records the exact file delta.
-2. A publish phase receives the token, re-verifies that
-   delta, creates a bot-authored commit, and creates or
-   updates the matching pull request.
+2. A fresh publish job restores and re-verifies that delta
+   without credentials. Only its following trusted substep
+   receives the write token, creates a bot-authored commit,
+   and creates or updates the matching pull request.
 
 The tool refuses to reuse a remote branch unless there is
 exactly one matching open pull request, its base and head
@@ -41,63 +42,79 @@ check after formatting. The hook and formatter share the
 token-free environment. Their combined exact delta is the
 only content eligible for the pull request.
 
-The explicit phases are also available:
+`python3 auto_lint_pr.py` defaults to `prepare`. Local
+operators can run the explicit verification and publication
+phases as separate commands:
 
 ```sh
 python3 auto_lint_pr.py prepare \
   --lint-root /absolute/path/to/lint
+python3 auto_lint_pr.py verify \
+  --restore \
+  --state /absolute/path/to/state.json \
+  --verification /absolute/path/to/verified.json
 python3 auto_lint_pr.py publish \
-  --lint-root /absolute/path/to/lint
+  --state /absolute/path/to/state.json \
+  --verification /absolute/path/to/verified.json
 ```
 
 `prepare` writes a state record below `.git` by default.
-`publish` fails if the base checkout or prepared file bytes
-have changed.
+`verify --restore` materializes that record into a clean
+checkout and writes a receipt. `publish` fails if the state,
+receipt, base checkout, or prepared bytes and modes differ.
+The command-line phases assume a trusted local operator; use
+the reusable workflow for adversarial job isolation.
 
 ## Composite action
 
-Check out this repository and the pinned lint release
-outside the consumer repository, then invoke the local
-action:
+The composite action exposes `phase: prepare` and
+`phase: publish`. Run those phases in different jobs. The
+prepare job has read-only permissions and runs the formatter
+and optional hook. The publish job starts from fresh
+checkouts, downloads the state artifact, and invokes the
+publish phase:
 
 ```yaml
-- uses: actions/checkout@<full-commit-sha>
-  with:
-    persist-credentials: false
-    path: workspace
-- uses: actions/checkout@<full-commit-sha>
-  with:
-    repository: trycopilotai/lint
-    ref: <lint-commit>
-    persist-credentials: false
-    path: dependencies/lint
-- uses: actions/checkout@<full-commit-sha>
-  with:
-    repository: trycopilotai/auto-lint-pr
-    ref: <auto-lint-pr-commit>
-    persist-credentials: false
-    path: dependencies/auto-lint-pr
+# Read-only prepare job, after pinned checkouts.
 - uses: ./dependencies/auto-lint-pr
   with:
-    token: ${{ secrets.GITHUB_TOKEN }}
+    phase: prepare
     lint-root: dependencies/lint
     cwd: workspace
+    state-path: ${{ runner.temp }}/auto-lint-state.json
+    verification-path: ${{ runner.temp }}/verified.json
+
+# Fresh publish job, after downloading the state artifact.
+- uses: ./dependencies/auto-lint-pr
+  with:
+    phase: publish
+    token: ${{ github.token }}
+    cwd: workspace
+    state-path: ${{ runner.temp }}/auto-lint-state.json
+    verification-path: ${{ runner.temp }}/verified.json
 ```
 
 The action exposes `docker`, `modified`, `paths`,
 `files-from0`, `languages`, `hook`, `labels`, `reviewers`,
 `title`, and `body` inputs. The reusable workflow at
-`.github/workflows/auto-lint-pr.yml` supplies checkout, its
-permission ceiling, and per-repository/base concurrency. Its
-optional `checkout_token` secret is used only to read
-private dependency repositories. Publication always uses the
-calling repository's `github.token`.
+`.github/workflows/auto-lint-pr.yml` supplies the complete
+two-job artifact bridge, fresh checkouts, its permission
+ceiling, and per-repository/base concurrency. Its optional
+`checkout_token` secret is used only to read private
+dependency repositories. Publication always uses the calling
+repository's `github.token`.
 
 ## Reusable workflow
 
-The calling job must grant both write permissions because a
-reusable workflow cannot elevate the caller's token. Pin the
-workflow reference to a full commit:
+Before the first run, turn on the repository or organization
+Actions setting **Allow GitHub Actions to create and approve
+pull requests**. Token permissions do not change that
+independent setting.
+
+The calling job must grant the workflow's write permissions
+because a reusable workflow cannot elevate the caller's
+token. `issues: write` is required for the optional labels
+input. Pin the workflow reference to a full commit:
 
 ```yaml
 permissions:
@@ -107,14 +124,17 @@ jobs:
   auto-lint:
     permissions:
       contents: write
+      issues: write
       pull-requests: write
     uses: >-
       trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@<full-commit-sha>
 ```
 
-The called job checks out its own repository at
+The called jobs check out this repository at
 `job.workflow_sha`, so the local composite action and the
-reusable workflow come from the same pinned commit.
+reusable workflow come from the same pinned commit. The
+formatter job cannot carry command-file or action-checkout
+changes into the fresh publisher job.
 
 ## Safety boundaries
 
@@ -123,7 +143,15 @@ reusable workflow come from the same pinned commit.
 - A private dependency checkout token never enters the
   publication environment.
 - Formatting and the optional hook do not receive GitHub
-  tokens or Actions runtime tokens.
+  tokens, Actions runtime tokens, or runner command-file
+  paths.
+- Formatting and the optional hook run in a read-only job.
+  Publication runs in a fresh job with fresh action and
+  consumer checkouts.
+- Before token injection, the fresh job restores the
+  recorded regular-file delta and binds its exact state,
+  bytes, modes, base commit, and checkout to a verification
+  receipt.
 - Publishing uses GitHub's expected-head commit mutation
   with the exact bytes recorded during token-free
   preparation.
@@ -148,7 +176,8 @@ reusable workflow come from the same pinned commit.
   ignored residue are all rejected.
 
 This action intentionally needs `contents: write` and
-`pull-requests: write` during publication. Review consumer
+`pull-requests: write` during publication, plus
+`issues: write` when labels are requested. Review consumer
 hooks as repository code because their output can become
 part of the formatting pull request.
 
