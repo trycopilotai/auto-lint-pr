@@ -1119,6 +1119,102 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             self.assertFalse(result["changed"])
             self.assertIsNone(result["pull_request"])
 
+    def test_publish_existing_exact_delta_retries_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8")
+            delta = AUTO_LINT_PR.delta_records(repository)
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": True,
+                        "cwd": str(repository),
+                        "delta": delta,
+                        "lint_commit": "pinned",
+                        "repository": "owner/repository",
+                        "schema": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--lint-root",
+                    "/unused",
+                    "--state",
+                    str(state_path),
+                    "--label",
+                    "transaction-boundary",
+                    "--reviewer",
+                    "octocat",
+                ]
+            )
+            branch_tip = "existing-tip"
+            pull = {
+                "base": {"ref": "main"},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                    "sha": branch_tip,
+                },
+                "number": 4,
+            }
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            branch_tree = {"sample.txt": blob_record(b"after\n")}
+            environment = {"GH_TOKEN": "token"}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value=environment,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    return_value=[pull],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, branch_tip],
+                ),
+                mock.patch.object(AUTO_LINT_PR, "branch_commits"),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, branch_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "apply_labels_and_reviewers",
+                ) as apply_metadata,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                ) as create_commit,
+            ):
+                result = AUTO_LINT_PR.run_publish(arguments)
+
+            self.assertFalse(result["changed"])
+            self.assertEqual(4, result["pull_request"])
+            apply_metadata.assert_called_once_with(
+                "owner/repository",
+                4,
+                ["transaction-boundary"],
+                ["octocat"],
+                environment,
+            )
+            create_commit.assert_not_called()
+
     def test_publish_refuses_pull_request_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"

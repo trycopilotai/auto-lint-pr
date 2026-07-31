@@ -1423,12 +1423,23 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
             branch_tree,
             state["delta"],
         ):
+            number = pull_request.get("number")
+            if not isinstance(number, int):
+                raise CommandError("pull request response is missing its number")
+            apply_labels_and_reviewers(
+                repository_name,
+                number,
+                arguments.label,
+                arguments.reviewer,
+                environment,
+            )
             result = {
                 "changed": False,
-                "pull_request": pull_request["number"],
+                "pull_request": number,
                 "schema": 1,
             }
             write_action_output("changed", "false")
+            write_action_output("pull-request", str(number))
             return result
         expected_head = tip
         staging_branch = staging_branch_name(
