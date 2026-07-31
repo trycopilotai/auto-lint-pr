@@ -53,7 +53,8 @@ jobs:
           --prose-wrap always --trailing-comma none
           README.md CONTRIBUTING.md SECURITY.md action.yml
           .github .claude-plugin .codex-plugin docs evidence
-          skills lint-release-manifest.json
+          skills lint-dependency.json
+          lint-release-manifest.json
 
   draft:
     needs: verify

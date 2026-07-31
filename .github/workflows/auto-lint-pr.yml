@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: trycopilotai/lint
-          ref: 7b103526f20d859ad15557f483ec0591638c9116
+          ref: 07c88d661d3c97ac6099966765c25c27e4f3a791
           token: "${{ secrets.token }}"
           persist-credentials: false
           path: dependencies/lint

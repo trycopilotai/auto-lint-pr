@@ -14,7 +14,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LINT_COMMIT = "7b103526f20d859ad15557f483ec0591638c9116"
+LINT_COMMIT = "07c88d661d3c97ac6099966765c25c27e4f3a791"
+LINT_MANIFEST = "lint-release-manifest.json"
+LINT_REF = "refs/tags/v0.1.3"
+LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
 
 
 def repository_files() -> list[Path]:
@@ -62,6 +65,7 @@ def verify_required_paths() -> None:
         "action.yml",
         "action_entrypoint.py",
         "auto_lint_pr.py",
+        "lint-dependency.json",
         "lint-release-manifest.json",
         "skills/auto-lint-pr/SKILL.md",
     )
@@ -101,7 +105,7 @@ def verify_plugins() -> None:
 
 
 def verify_lint_manifest() -> None:
-    path = ROOT / "lint-release-manifest.json"
+    path = ROOT / LINT_MANIFEST
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("schema_version") != 1:
         raise ValueError("lint release manifest has the wrong schema")
@@ -125,8 +129,23 @@ def verify_lint_manifest() -> None:
             raise ValueError(f"unexpected lint image: {image}")
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
             raise ValueError(f"invalid lint image digest: {image}")
-    if value.get("release") != "0.1.0":
+    if value.get("release") != "0.1.3":
         raise ValueError("lint release manifest has the wrong release")
+
+
+def verify_lint_dependency() -> None:
+    path = ROOT / "lint-dependency.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "commit": LINT_COMMIT,
+        "manifest": LINT_MANIFEST,
+        "manifest_sha256": sha256(ROOT / LINT_MANIFEST),
+        "ref": LINT_REF,
+        "repository": LINT_REPOSITORY,
+        "schema": 1,
+    }
+    if value != expected:
+        raise ValueError("lint dependency ledger does not match the release")
 
 
 def verify_actions(files: list[Path]) -> None:
@@ -228,6 +247,7 @@ def main() -> int:
     verify_python(files)
     verify_plugins()
     verify_lint_manifest()
+    verify_lint_dependency()
     verify_actions(files)
     verify_action_boundary()
     verify_demo()

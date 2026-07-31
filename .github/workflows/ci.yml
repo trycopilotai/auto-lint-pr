@@ -60,7 +60,8 @@ jobs:
           --prose-wrap always --trailing-comma none
           README.md CONTRIBUTING.md SECURITY.md action.yml
           .github .claude-plugin .codex-plugin docs evidence
-          skills lint-release-manifest.json
+          skills lint-dependency.json
+          lint-release-manifest.json
 
   pinned-lint:
     runs-on: ubuntu-latest
@@ -70,7 +71,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Apply pinned lint release without a token
-        uses: trycopilotai/lint@7b103526f20d859ad15557f483ec0591638c9116
+        uses: trycopilotai/lint@07c88d661d3c97ac6099966765c25c27e4f3a791
         with:
           mode: write
           docker: "false"
