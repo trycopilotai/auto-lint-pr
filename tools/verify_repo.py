@@ -200,6 +200,23 @@ def verify_actions(files: list[Path]) -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in workflows)
     if LINT_COMMIT not in combined:
         raise ValueError("workflows do not pin the lint release commit")
+    continuous_integration = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "python3 auto_lint_pr.py prepare",
+        "--lint-root ../lint",
+        "--cwd fixtures/integration",
+        "--language requirements",
+        "--local",
+        'GITHUB_TOKEN: ""',
+        'GH_TOKEN: ""',
+        '"fixtures/integration/requirements.txt"',
+    ):
+        if required not in continuous_integration:
+            raise ValueError(f"CI token-free fixture is missing: {required}")
+    if "uses: trycopilotai/lint@" in continuous_integration:
+        raise ValueError("CI bypasses the auto-lint-pr transaction")
     reusable = (ROOT / ".github" / "workflows" / "auto-lint-pr.yml").read_text(
         encoding="utf-8"
     )
@@ -246,8 +263,10 @@ def verify_actions(files: list[Path]) -> None:
     )
     if allowed_pattern.fullmatch(allowed) is None:
         raise ValueError("release signer allowlist is invalid")
-    if "origin" in allowed.casefold():
-        raise ValueError("release signer allowlist exposes an internal label")
+    if len(allowed.splitlines()) != 1:
+        raise ValueError("release signer allowlist must have one record")
+    if len(allowed.rstrip("\n").split(" ")) != 3:
+        raise ValueError("release signer allowlist has extra fields")
 
 
 def verify_action_boundary() -> None:
@@ -299,10 +318,13 @@ def verify_launch_surface() -> None:
     for required in (
         "assets/demo.svg",
         "assets/poster.svg",
+        "<picture>",
+        'media="(prefers-reduced-motion: reduce)"',
+        'srcset="assets/poster.svg"',
         "Reconstructed",
-        "Reviewed 2026-07-31",
+        "Reviewed 2026-08-02",
         "peter-evans/create-pull-request/blob/"
-        "7ec5aae3c91d101b005af46adc760d265911886a/README.md",
+        "11fa467881691ac900904a2eea702c5ea848ad13/README.md",
         "Launch success is one external repository completing",
     ):
         if required not in readme:
@@ -348,6 +370,7 @@ def verify_demo() -> None:
         "social_preview",
         "invocation",
         "generator",
+        "implementation",
         "skill",
     ):
         record = value.get(key)
@@ -361,6 +384,26 @@ def verify_demo() -> None:
             raise ValueError(f"demo checksum is invalid: {key}")
         if sha256(ROOT / relative) != expected:
             raise ValueError(f"demo checksum is stale: {key}")
+
+    run = value.get("run")
+    if not isinstance(run, dict):
+        raise ValueError("demo manifest has no run provenance")
+    expected_run = {
+        "agent": "generate_demo.py",
+        "agent_version": "1.0.0",
+        "date": "2026-08-02",
+        "edited": False,
+        "input_commit": run.get("input_commit"),
+        "invocation": "./scripts/demo.sh",
+        "lint_commit": run.get("lint_commit"),
+        "output_sha256": value["output"]["sha256"],
+        "protocol_sha256": value["skill"]["sha256"],
+    }
+    if run != expected_run:
+        raise ValueError("demo run provenance is incomplete or inconsistent")
+    for key in ("input_commit", "lint_commit"):
+        if re.fullmatch(r"[0-9a-f]{40}", run[key]) is None:
+            raise ValueError(f"demo run commit is invalid: {key}")
 
     preview = ROOT / value["social_preview"]["path"]
     payload = preview.read_bytes()

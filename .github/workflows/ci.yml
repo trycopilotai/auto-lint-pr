@@ -70,17 +70,47 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - name: Apply pinned lint release without a token
-        uses: trycopilotai/lint@d095640206c8f39cd968f81ce2e4bbcf8b03a0db
+          path: auto-lint-pr
+      - name: Check out pinned lint release
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          mode: write
-          docker: "false"
-          cwd: fixtures/integration
-          languages: requirements
-      - name: Verify pinned output
+          repository: trycopilotai/lint
+          ref: d095640206c8f39cd968f81ce2e4bbcf8b03a0db
+          persist-credentials: false
+          path: lint
+      - name: Exercise token-free prepare transaction
+        working-directory: auto-lint-pr
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
         shell: bash
         run: |
+          state="$RUNNER_TEMP/auto-lint-pr-state.json"
+          python3 auto_lint_pr.py prepare \
+            --lint-root ../lint \
+            --local \
+            --cwd fixtures/integration \
+            --language requirements \
+            --state "$state"
           diff -u \
             fixtures/integration/expected.txt \
             fixtures/integration/requirements.txt
-          test -n "$(git diff --name-only)"
+          test "$(git diff --name-only)" = \
+            "fixtures/integration/requirements.txt"
+          python3 - "$state" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          state = json.loads(
+              Path(sys.argv[1]).read_text(encoding="utf-8")
+          )
+          paths = [record["path"] for record in state["delta"]]
+          expected = ["fixtures/integration/requirements.txt"]
+          if paths != expected:
+              raise SystemExit(f"unexpected delta: {paths}")
+          if state["changed"] is not True:
+              raise SystemExit("prepare did not report a change")
+          PY

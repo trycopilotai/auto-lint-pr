@@ -24,9 +24,15 @@ The transaction has two credential phases:
 The tool refuses to reuse a remote branch unless there is
 exactly one matching open pull request, its base and head
 branches match, its reported head commit matches the remote
-tip, and that tip is authored by `github-actions[bot]`.
+tip, and every branch-only commit is authored and committed
+by `github-actions[bot]` with its documented bot email.
 
-![Reconstructed token-free prepare demo](assets/demo.svg)
+<picture>
+  <source media="(prefers-reduced-motion: reduce)"
+    srcset="assets/poster.svg">
+  <img src="assets/demo.svg"
+    alt="Reconstructed token-free prepare demo">
+</picture>
 
 _Reconstructed from the deterministic
 [token-free transcript](evidence/demo-transcript.txt). A
@@ -151,8 +157,8 @@ changes into the fresh publisher job.
 
 ## Comparison
 
-Reviewed 2026-07-31 against the official
-[`peter-evans/create-pull-request` documentation](https://github.com/peter-evans/create-pull-request/blob/7ec5aae3c91d101b005af46adc760d265911886a/README.md).
+Reviewed 2026-08-02 against the official
+[`peter-evans/create-pull-request` documentation](https://github.com/peter-evans/create-pull-request/blob/11fa467881691ac900904a2eea702c5ea848ad13/README.md).
 Both tools create or update pull requests from repository
 changes, but they own different transaction boundaries.
 
@@ -189,8 +195,9 @@ for the other.
 - Additions and modifications are limited to regular
   `100644` files, the mode represented by that mutation.
   Deletions are limited to the same regular-file mode.
-- Every published commit must be authored by the Actions bot
-  and carry a valid GitHub-generated signature.
+- Every published commit must be authored and committed by
+  the Actions bot using its documented bot identity and must
+  carry a valid GitHub-generated signature.
 - An existing pull-request branch is updated only after its
   candidate commit passes on a transaction-specific staging
   branch. Promotion is a non-forced fast-forward, and the
