@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TRANSCRIPT_PATH = ROOT / "evidence" / "demo-transcript.txt"
 DEMO_PATH = ROOT / "assets" / "demo.svg"
 MANIFEST_PATH = ROOT / "evidence" / "demo-manifest.json"
+EVIDENCE_DATE = "2026-08-02"
+FIXTURE_DATE = "2026-08-02T00:00:00Z"
 TOKEN_NAMES = (
     "GITHUB_TOKEN",
     "GH_TOKEN",
@@ -46,11 +48,16 @@ def load_implementation():
 AUTO_LINT_PR = load_implementation()
 
 
-def git(repository: Path, *arguments: str) -> str:
+def git(
+    repository: Path,
+    *arguments: str,
+    environment: dict[str, str] | None = None,
+) -> str:
     completed = subprocess.run(
         ["git", *arguments],
         cwd=repository,
         check=True,
+        env=environment,
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -71,7 +78,16 @@ def initialize_repository(repository: Path) -> None:
 
 def commit_all(repository: Path) -> str:
     git(repository, "add", "-A")
-    git(repository, "commit", "-qm", "demo fixture")
+    environment = dict(os.environ)
+    environment["GIT_AUTHOR_DATE"] = FIXTURE_DATE
+    environment["GIT_COMMITTER_DATE"] = FIXTURE_DATE
+    git(
+        repository,
+        "commit",
+        "-qm",
+        "demo fixture",
+        environment=environment,
+    )
     return git(repository, "rev-parse", "HEAD")
 
 
@@ -131,7 +147,7 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
             "needs-formatting\n",
             encoding="utf-8",
         )
-        commit_all(consumer)
+        consumer_commit = commit_all(consumer)
         state_path = root / "state.json"
         arguments = AUTO_LINT_PR.parser().parse_args(
             [
@@ -151,7 +167,11 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
             previous[name] = os.environ.get(name)
             os.environ[name] = "demo-write-token"
         try:
-            return AUTO_LINT_PR.run_prepare(arguments)
+            return {
+                "input_commit": consumer_commit,
+                "lint_commit": lint_commit,
+                "state": AUTO_LINT_PR.run_prepare(arguments),
+            }
         finally:
             for name, value in previous.items():
                 if value is None:
@@ -160,8 +180,11 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
                     os.environ[name] = value
 
 
-def transcript() -> str:
-    state = prepare_demo()
+def transcript() -> tuple[str, dict[str, str]]:
+    result = prepare_demo()
+    state = result["state"]
+    if not isinstance(state, dict):
+        raise RuntimeError("demo preparation did not return state")
     paths = []
     for record in state["delta"]:
         paths.append(record["path"])
@@ -175,7 +198,11 @@ def transcript() -> str:
         f"exact delta: {', '.join(paths)}",
         "publish phase: not run in this token-free demo",
     ]
-    return "\n".join(lines) + "\n"
+    run = {
+        "input_commit": str(result["input_commit"]),
+        "lint_commit": str(result["lint_commit"]),
+    }
+    return "\n".join(lines) + "\n", run
 
 
 def render_svg(payload: str) -> str:
@@ -247,15 +274,27 @@ def artifact_record(relative: str) -> dict[str, str]:
     }
 
 
-def demo_manifest() -> str:
+def demo_manifest(run: dict[str, str]) -> str:
     """Derive the evidence manifest from the artifacts that own each fact."""
 
     value = {
         "demo": artifact_record("assets/demo.svg"),
         "generator": artifact_record("scripts/generate_demo.py"),
+        "implementation": artifact_record("auto_lint_pr.py"),
         "invocation": artifact_record("scripts/demo.sh"),
         "output": artifact_record("evidence/demo-transcript.txt"),
         "poster": artifact_record("assets/poster.svg"),
+        "run": {
+            "agent": "generate_demo.py",
+            "agent_version": "1.0.0",
+            "date": EVIDENCE_DATE,
+            "edited": False,
+            "input_commit": run["input_commit"],
+            "invocation": "./scripts/demo.sh",
+            "lint_commit": run["lint_commit"],
+            "output_sha256": sha256(TRANSCRIPT_PATH),
+            "protocol_sha256": sha256(ROOT / "skills" / "auto-lint-pr" / "SKILL.md"),
+        },
         "schema": 1,
         "skill": artifact_record("skills/auto-lint-pr/SKILL.md"),
         "social_preview": artifact_record("assets/social-preview.png"),
@@ -273,7 +312,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = parser().parse_args()
-    payload = transcript()
+    payload, run = transcript()
     svg = render_svg(payload)
     if arguments.check:
         if TRANSCRIPT_PATH.read_text(encoding="utf-8") != payload:
@@ -282,7 +321,7 @@ def main() -> int:
         if DEMO_PATH.read_text(encoding="utf-8") != svg:
             print("demo SVG is stale", file=sys.stderr)
             return 1
-        if MANIFEST_PATH.read_text(encoding="utf-8") != demo_manifest():
+        if MANIFEST_PATH.read_text(encoding="utf-8") != demo_manifest(run):
             print("demo manifest is stale", file=sys.stderr)
             return 1
         return 0
@@ -293,7 +332,7 @@ def main() -> int:
     DEMO_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRANSCRIPT_PATH.write_text(payload, encoding="utf-8")
     DEMO_PATH.write_text(svg, encoding="utf-8")
-    MANIFEST_PATH.write_text(demo_manifest(), encoding="utf-8")
+    MANIFEST_PATH.write_text(demo_manifest(run), encoding="utf-8")
     return 0
 
 
