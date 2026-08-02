@@ -112,7 +112,7 @@ class WorkflowMetadataTest(unittest.TestCase):
         consumer_checkout = verify.split(
             "- name: Check out exact consumer base",
             maxsplit=1,
-        )[1].split("- name: Check out this action revision", maxsplit=1,)[0]
+        )[1].split("- name: Check out this action revision", maxsplit=1)[0]
         self.assertIn("fetch-depth: 0", consumer_checkout)
         self.assertNotIn("actions/checkout@", publish)
         self.assertNotIn("secrets.checkout_token", publish)
