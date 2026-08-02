@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "7f89c342febd53f3645a1656a3b31fc4a991e1792854f97907a5faaa48917be1"
+    "sha256": "dcf775bc4c337c0eaa554b31de0656b06a3ca816c620503d2eb73132d1d21ddc"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -32,12 +32,12 @@
     "invocation": "./scripts/demo.sh",
     "lint_commit": "9f8581ee6e90a114962e7d743e80235de126bd90",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
-    "protocol_sha256": "89d92c85e3e27cbb9b8b4eeb7df95060dc44e78358e264a0f2e6d5ade3f85733"
+    "protocol_sha256": "f437822667ea118dd6327eb693f47cdf1010b023b46c3e2ad521c578e1351195"
   },
   "schema": 1,
   "skill": {
     "path": "skills/auto-lint-pr/SKILL.md",
-    "sha256": "89d92c85e3e27cbb9b8b4eeb7df95060dc44e78358e264a0f2e6d5ade3f85733"
+    "sha256": "f437822667ea118dd6327eb693f47cdf1010b023b46c3e2ad521c578e1351195"
   },
   "social_preview": {
     "path": "assets/social-preview.png",
