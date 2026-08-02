@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import unittest
 from pathlib import Path
@@ -81,6 +82,22 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("Allow GitHub Actions to create and approve", reusable)
         self.assertIn("pull requests", reusable)
 
+    def test_ci_exercises_token_free_auto_lint_transaction(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("python3 auto_lint_pr.py prepare", text)
+        self.assertIn("--lint-root ../lint", text)
+        self.assertIn("--cwd fixtures/integration", text)
+        self.assertIn("--language requirements", text)
+        self.assertIn("--local", text)
+        self.assertIn('GITHUB_TOKEN: ""', text)
+        self.assertIn('GH_TOKEN: ""', text)
+        self.assertIn(
+            '"fixtures/integration/requirements.txt"',
+            text,
+        )
+        self.assertNotIn("uses: trycopilotai/lint@", text)
+
     def test_external_actions_use_commit_references(self) -> None:
         pattern = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")
         workflows = (ROOT / ".github" / "workflows").glob("*.yml")
@@ -111,7 +128,8 @@ class WorkflowMetadataTest(unittest.TestCase):
             allowed,
             r"^trycopilotai-release ssh-ed25519 " r"[A-Za-z0-9+/]+={0,2}\n$",
         )
-        self.assertNotIn("origin", allowed.casefold())
+        self.assertEqual(1, len(allowed.splitlines()))
+        self.assertEqual(3, len(allowed.rstrip("\n").split(" ")))
 
 
 class InstallMetadataTest(unittest.TestCase):
@@ -156,6 +174,12 @@ class LaunchSurfaceTest(unittest.TestCase):
 
         self.assertIn("assets/demo.svg", readme)
         self.assertIn("assets/poster.svg", readme)
+        self.assertIn("<picture>", readme)
+        self.assertIn(
+            'media="(prefers-reduced-motion: reduce)"',
+            readme,
+        )
+        self.assertIn('srcset="assets/poster.svg"', readme)
         self.assertIn("Reconstructed", readme)
         lines = transcript.rstrip("\n").splitlines()
         for line in lines:
@@ -164,14 +188,36 @@ class LaunchSurfaceTest(unittest.TestCase):
         self.assertIn("prefers-reduced-motion: reduce", demo)
         self.assertIn("animation: none", demo)
 
+        manifest = json.loads(
+            (ROOT / "evidence" / "demo-manifest.json").read_text(encoding="utf-8")
+        )
+        run = manifest["run"]
+        self.assertEqual("generate_demo.py", run["agent"])
+        self.assertEqual("1.0.0", run["agent_version"])
+        self.assertEqual("2026-08-02", run["date"])
+        self.assertFalse(run["edited"])
+        self.assertEqual("./scripts/demo.sh", run["invocation"])
+        self.assertRegex(run["input_commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(run["lint_commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(run["output_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(run["protocol_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            manifest["output"]["sha256"],
+            run["output_sha256"],
+        )
+        self.assertEqual(
+            manifest["skill"]["sha256"],
+            run["protocol_sha256"],
+        )
+
     def test_comparison_metric_and_article_are_present(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         article = ROOT / "docs" / "exact-delta-boundary.md"
 
-        self.assertIn("Reviewed 2026-07-31", readme)
+        self.assertIn("Reviewed 2026-08-02", readme)
         self.assertIn(
             "peter-evans/create-pull-request/blob/"
-            "7ec5aae3c91d101b005af46adc760d265911886a/README.md",
+            "11fa467881691ac900904a2eea702c5ea848ad13/README.md",
             readme,
         )
         self.assertIn(
