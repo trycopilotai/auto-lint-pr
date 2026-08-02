@@ -5,7 +5,7 @@
   },
   "generator": {
     "path": "scripts/generate_demo.py",
-    "sha256": "35cdf3a552f43dba839ac9c20272bf6405e1420de737ffe06e87c32f2f7547d3"
+    "sha256": "b1f4ac3ba2681a3addbc7b8c83c5171cf895d20238d0ff4f9dae18f3e0b6269d"
   },
   "implementation": {
     "path": "auto_lint_pr.py",
