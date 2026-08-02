@@ -31,6 +31,16 @@ def comma_values(name: str) -> list[str]:
     return values
 
 
+def action_cwd() -> str:
+    """Keep action phases inside the trusted consumer checkout."""
+
+    boundary = Path(os.environ.get("INPUT_WORKSPACE_ROOT", ".")).resolve()
+    cwd = Path(os.environ.get("INPUT_CWD", ".")).resolve()
+    if not cwd.is_relative_to(boundary):
+        raise ValueError("INPUT_CWD must stay within INPUT_WORKSPACE_ROOT")
+    return str(cwd)
+
+
 def command(phase: str) -> list[str]:
     action_path = Path(os.environ["GITHUB_ACTION_PATH"])
     arguments = [
@@ -38,7 +48,7 @@ def command(phase: str) -> list[str]:
         str(action_path / "auto_lint_pr.py"),
         phase,
         "--cwd",
-        os.environ.get("INPUT_CWD", "."),
+        action_cwd(),
         "--base",
         os.environ.get("INPUT_BASE", "main"),
         "--repository",

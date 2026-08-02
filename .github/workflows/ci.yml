@@ -194,6 +194,24 @@ jobs:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: lint
+      - name: Resolve exact signed image reference
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        shell: bash
+        working-directory: auto-lint-pr
+        run: |
+          python3 tools/prefetch_images.py \
+            --lint-root ../lint \
+            --manifest lint-release-manifest.json \
+            --dependency lint-dependency.json \
+            --allowed-signers \
+              .github/lint-release-allowed-signers \
+            --languages requirements \
+            >"$RUNNER_TEMP/lint-image-references"
+          test -s "$RUNNER_TEMP/lint-image-references"
       - name: Authenticated exact-digest prefetch
         env:
           PREFETCH_TOKEN:
@@ -202,35 +220,29 @@ jobs:
         working-directory: auto-lint-pr
         run: |
           auth="$RUNNER_TEMP/docker-auth"
-          mkdir "$auth"
-          image="$(
-            python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          manifest = json.loads(
-              Path("lint-release-manifest.json").read_text(
-                  encoding="utf-8"
-              )
-          )
-          images = manifest["images"]
-          if manifest["schema_version"] != 1:
-              raise SystemExit("unsupported lint release manifest schema")
-          name = "ghcr.io/trycopilotai/lint-requirements"
-          print(f"{name}@{images[name]}")
-          PY
-          )"
+          mkdir -m 700 "$auth"
+          cleanup() {
+            if test -d "$auth"; then
+              find "$auth" -type f -delete
+              find "$auth" -depth -type d -empty -delete
+            fi
+          }
+          trap cleanup EXIT
           printf '%s' "$PREFETCH_TOKEN" | \
             DOCKER_CONFIG="$auth" docker login ghcr.io \
               --username "${{ github.actor }}" \
               --password-stdin
-          DOCKER_CONFIG="$auth" docker pull "$image"
+          while IFS= read -r image; do
+            DOCKER_CONFIG="$auth" docker pull "$image"
+          done <"$RUNNER_TEMP/lint-image-references"
           DOCKER_CONFIG="$auth" docker logout ghcr.io
-          if grep -F 'ghcr.io' "$auth/config.json"; then
+          if grep -F -q 'ghcr.io' "$auth/config.json"; then
             printf '%s\n' \
               "registry credentials survived logout" >&2
             exit 1
           fi
+          cleanup
+          trap - EXIT
       - name: Exercise token-free default Docker transaction
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "formatter-must-not-receive"

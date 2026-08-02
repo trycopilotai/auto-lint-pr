@@ -72,6 +72,11 @@ on:
           "Optional read token for private dependency
           checkouts; never used for publication"
         required: false
+      registry_token:
+        description:
+          "Optional package-read token used only to prefetch
+          private lint images; never passed to formatting"
+        required: false
 
 permissions:
   contents: read
@@ -85,6 +90,7 @@ jobs:
   prepare:
     permissions:
       contents: read
+      packages: read
     runs-on: ubuntu-latest
     outputs:
       base-head: "${{ steps.prepare.outputs.base-head }}"
@@ -115,9 +121,65 @@ jobs:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: dependencies/auto-lint-pr
+      - name: Resolve authenticated image references
+        if: inputs.docker
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker-clean"
+          python3 \
+            dependencies/auto-lint-pr/tools/prefetch_images.py \
+            --lint-root dependencies/lint \
+            --manifest \
+              dependencies/auto-lint-pr/lint-release-manifest.json \
+            --dependency \
+              dependencies/auto-lint-pr/lint-dependency.json \
+            --allowed-signers \
+              dependencies/auto-lint-pr/.github/lint-release-allowed-signers \
+            --languages "${{ inputs.languages }}" \
+            >"$RUNNER_TEMP/lint-image-references"
+          test -s "$RUNNER_TEMP/lint-image-references"
+      - name: Prefetch private images by exact digest
+        if: inputs.docker
+        env:
+          REGISTRY_TOKEN:
+            "${{ secrets.registry_token ||
+            secrets.checkout_token || github.token }}"
+        shell: bash
+        run: |
+          auth="$RUNNER_TEMP/docker-auth"
+          mkdir -m 700 "$auth"
+          cleanup() {
+            if test -d "$auth"; then
+              find "$auth" -type f -delete
+              find "$auth" -depth -type d -empty -delete
+            fi
+          }
+          trap cleanup EXIT
+          printf '%s' "$REGISTRY_TOKEN" | \
+            DOCKER_CONFIG="$auth" docker login ghcr.io \
+              --username "${{ github.actor }}" \
+              --password-stdin
+          while IFS= read -r image; do
+            DOCKER_CONFIG="$auth" docker pull "$image"
+          done <"$RUNNER_TEMP/lint-image-references"
+          DOCKER_CONFIG="$auth" docker logout ghcr.io
+          if grep -F -q 'ghcr.io' "$auth/config.json"; then
+            printf '%s\n' \
+              "registry credentials survived logout" >&2
+            exit 1
+          fi
+          cleanup
+          trap - EXIT
       - name: Prepare formatting without write credentials
         id: prepare
         uses: ./dependencies/auto-lint-pr
+        env:
+          DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"
         with:
           phase: prepare
           lint-root: dependencies/lint
@@ -126,6 +188,7 @@ jobs:
           verification-path:
             "${{ runner.temp }}/auto-lint-verified.json"
           cwd: "workspace/${{ inputs.cwd }}"
+          workspace-root: workspace
           base: "${{ inputs.base }}"
           modified: "${{ inputs.modified }}"
           docker: "${{ inputs.docker }}"
@@ -192,6 +255,7 @@ jobs:
           verification-path:
             "${{ runner.temp }}/auto-lint-preverified.json"
           cwd: "workspace/${{ inputs.cwd }}"
+          workspace-root: workspace
           base: "${{ inputs.base }}"
       - name: Package immutable publication inputs
         id: package
@@ -300,6 +364,7 @@ jobs:
             "${{ runner.temp
             }}/auto-lint-final-verified.json"
           cwd: "workspace/${{ inputs.cwd }}"
+          workspace-root: workspace
           base: "${{ inputs.base }}"
           labels: "${{ inputs.labels }}"
           reviewers: "${{ inputs.reviewers }}"

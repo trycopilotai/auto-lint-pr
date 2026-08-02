@@ -12,8 +12,10 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -202,6 +204,25 @@ def dependency_git_environment(
     return isolated
 
 
+def trusted_ssh_keygen() -> Path:
+    """Resolve the host SSH verifier without consulting Git config."""
+
+    candidates = [
+        Path("/usr/bin/ssh-keygen"),
+        Path("/bin/ssh-keygen"),
+        Path("C:/Windows/System32/OpenSSH/ssh-keygen.exe"),
+    ]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return resolved
+    raise DependencyError("ssh-keygen is required to verify the lint release")
+
+
 def refuse_pull_request_target(
     environment: Mapping[str, str],
 ) -> None:
@@ -235,11 +256,14 @@ def validate_selection(arguments: argparse.Namespace) -> None:
 def lint_command(
     arguments: argparse.Namespace,
     image_manifest: Path | None = None,
+    runtime_root: Path | None = None,
 ) -> list[str]:
     validate_selection(arguments)
     if arguments.lint_root is None:
         raise SafetyError("prepare requires --lint-root")
     lint_root = Path(arguments.lint_root).resolve()
+    if runtime_root is not None:
+        lint_root = runtime_root.resolve()
     cwd = "."
     if arguments.cwd is not None:
         cwd = arguments.cwd
@@ -540,14 +564,32 @@ def deterministic_archive_sha256(
     release: str,
     environment: Mapping[str, str],
 ) -> str:
+    archive = git_archive_payload(
+        lint_root,
+        ref,
+        environment,
+        prefix=f"lint-{release}/",
+    )
+    destination = io.BytesIO()
+    with gzip.GzipFile(filename="", fileobj=destination, mode="wb", mtime=0) as handle:
+        handle.write(archive)
+    return hashlib.sha256(destination.getvalue()).hexdigest()
+
+
+def git_archive_payload(
+    lint_root: Path,
+    object_name: str,
+    environment: Mapping[str, str],
+    prefix: str | None = None,
+) -> bytes:
+    """Return the exact Git archive bytes for one immutable object."""
+
+    command = ["git", "archive", "--format=tar"]
+    if prefix is not None:
+        command.append(f"--prefix={prefix}")
+    command.append(object_name)
     completed = subprocess.run(
-        [
-            "git",
-            "archive",
-            "--format=tar",
-            f"--prefix=lint-{release}/",
-            ref,
-        ],
+        command,
         cwd=lint_root,
         check=False,
         env=environment,
@@ -557,10 +599,270 @@ def deterministic_archive_sha256(
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
         raise DependencyError(f"could not reproduce lint source archive: {detail}")
-    destination = io.BytesIO()
-    with gzip.GzipFile(filename="", fileobj=destination, mode="wb", mtime=0) as handle:
-        handle.write(completed.stdout)
-    return hashlib.sha256(destination.getvalue()).hexdigest()
+    return completed.stdout
+
+
+def archive_relative_path(value: str) -> PurePosixPath:
+    """Validate one path emitted by Git's tar writer."""
+
+    if value == "" or "\0" in value or "\\" in value:
+        raise DependencyError("lint archive contains a non-canonical path")
+    relative = PurePosixPath(value)
+    if relative.is_absolute():
+        raise DependencyError("lint archive contains an absolute path")
+    if relative.as_posix() != value.rstrip("/"):
+        raise DependencyError("lint archive contains a non-canonical path")
+    for component in relative.parts:
+        if component in {"", ".", ".."}:
+            raise DependencyError("lint archive path escapes its root")
+    return relative
+
+
+def resolved_link_path(
+    parent: PurePosixPath,
+    value: str,
+) -> PurePosixPath:
+    """Resolve a relative archive link without allowing root escape."""
+
+    if value == "" or "\0" in value or "\\" in value:
+        raise DependencyError("lint archive link is not canonical")
+    link = PurePosixPath(value)
+    if link.is_absolute():
+        raise DependencyError("lint archive link is absolute")
+    parts = list(parent.parts)
+    for component in link.parts:
+        if component in {"", "."}:
+            continue
+        if component == "..":
+            if not parts:
+                raise DependencyError("lint archive link escapes its root")
+            parts.pop()
+            continue
+        parts.append(component)
+    if not parts:
+        raise DependencyError("lint archive link targets its root")
+    return PurePosixPath(*parts)
+
+
+def materialize_git_tree(
+    lint_root: Path,
+    object_name: str,
+    destination: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Materialize signed Git bytes without checkout filters or local state."""
+
+    archive = git_archive_payload(lint_root, object_name, environment)
+    members: dict[PurePosixPath, tarfile.TarInfo] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as handle:
+        for member in handle.getmembers():
+            relative = archive_relative_path(member.name)
+            if relative in members:
+                raise DependencyError("lint archive contains a duplicate path")
+            if not member.isdir() and not member.isfile() and not member.issym():
+                raise DependencyError("lint archive contains an unsupported entry")
+            members[relative] = member
+
+        destination.mkdir(mode=0o755)
+        directories = [path for path, member in members.items() if member.isdir()]
+        for relative in sorted(directories, key=lambda path: len(path.parts)):
+            target = destination.joinpath(*relative.parts)
+            target.mkdir(mode=0o755, parents=True, exist_ok=True)
+
+        files = [path for path, member in members.items() if member.isfile()]
+        for relative in sorted(files, key=lambda path: path.as_posix()):
+            member = members[relative]
+            source = handle.extractfile(member)
+            if source is None:
+                raise DependencyError("lint archive file has no payload")
+            payload = source.read()
+            if len(payload) != member.size:
+                raise DependencyError("lint archive file is truncated")
+            target = destination.joinpath(*relative.parts)
+            target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            with target.open("xb") as output:
+                output.write(payload)
+            mode = 0o644
+            if member.mode & 0o111:
+                mode = 0o755
+            os.chmod(target, mode)
+
+        links = [path for path, member in members.items() if member.issym()]
+        for relative in sorted(links, key=lambda path: len(path.parts)):
+            member = members[relative]
+            resolved = resolved_link_path(relative.parent, member.linkname)
+            if resolved not in members:
+                raise DependencyError("lint archive link target is missing")
+            target = destination.joinpath(*relative.parts)
+            target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            if os.name == "nt":
+                target.write_text(member.linkname, encoding="utf-8", newline="")
+            else:
+                os.symlink(member.linkname, target)
+
+
+def reject_executable_git_config(
+    repository: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Reject repository-local settings that can launch helper programs."""
+
+    pattern = (
+        r"^(core\.fsmonitor|gpg\..*program|"
+        r"filter\..*\.(clean|smudge|process)|diff\.external|"
+        r"diff\..*\.command|merge\..*\.driver)$"
+    )
+    completed = subprocess.run(
+        [
+            "git",
+            "config",
+            "--local",
+            "--includes",
+            "--name-only",
+            "--null",
+            "--get-regexp",
+            pattern,
+        ],
+        cwd=repository,
+        check=False,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode == 1 and completed.stdout == b"":
+        return
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise DependencyError(f"could not inspect lint Git configuration: {detail}")
+    names = sorted(
+        value.decode("utf-8", errors="replace")
+        for value in completed.stdout.split(b"\0")
+        if value != b""
+    )
+    raise DependencyError(
+        "lint checkout has executable repository Git configuration: " + ", ".join(names)
+    )
+
+
+def git_tree_entries(
+    repository: Path,
+    commit: str,
+    environment: Mapping[str, str],
+) -> dict[str, tuple[str, str, str]]:
+    """Return the exact recursive tree inventory for one commit."""
+
+    completed = subprocess.run(
+        ["git", "ls-tree", "-rz", "--full-tree", commit],
+        cwd=repository,
+        check=False,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise DependencyError(f"could not inventory the lint tree: {detail}")
+    entries: dict[str, tuple[str, str, str]] = {}
+    for raw in completed.stdout.split(b"\0"):
+        if raw == b"":
+            continue
+        metadata, separator, raw_path = raw.partition(b"\t")
+        fields = metadata.split()
+        if separator != b"\t" or len(fields) != 3:
+            raise DependencyError("lint tree inventory is malformed")
+        path = os.fsdecode(raw_path)
+        archive_relative_path(path)
+        if path in entries:
+            raise DependencyError("lint tree inventory repeats a path")
+        entries[path] = (
+            fields[0].decode("ascii"),
+            fields[1].decode("ascii"),
+            fields[2].decode("ascii"),
+        )
+    return entries
+
+
+def git_blob_payload(
+    repository: Path,
+    object_name: str,
+    environment: Mapping[str, str],
+) -> bytes:
+    """Read one exact blob without applying worktree filters."""
+
+    completed = subprocess.run(
+        ["git", "cat-file", "blob", object_name],
+        cwd=repository,
+        check=False,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise DependencyError(f"could not read a lint tree blob: {detail}")
+    return completed.stdout
+
+
+def worktree_paths(repository: Path) -> set[str]:
+    """Inventory files and links without following worktree symlinks."""
+
+    paths: set[str] = set()
+    for root, directories, files in os.walk(
+        repository, topdown=True, followlinks=False
+    ):
+        current = Path(root)
+        if current == repository:
+            directories[:] = [name for name in directories if name != ".git"]
+        for name in list(directories):
+            candidate = current / name
+            if candidate.is_symlink():
+                relative = candidate.relative_to(repository).as_posix()
+                paths.add(relative)
+                directories.remove(name)
+        for name in files:
+            if current == repository and name == ".git":
+                continue
+            candidate = current / name
+            relative = candidate.relative_to(repository).as_posix()
+            paths.add(relative)
+    return paths
+
+
+def verify_worktree_matches_commit(
+    repository: Path,
+    commit: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Compare actual bytes to Git objects without trusting index flags."""
+
+    entries = git_tree_entries(repository, commit, environment)
+    expected_paths = set(entries)
+    actual_paths = worktree_paths(repository)
+    if actual_paths != expected_paths:
+        raise DependencyError("lint checkout contains residue or missing paths")
+    for relative, (mode, object_type, object_name) in entries.items():
+        if object_type != "blob":
+            raise DependencyError("lint checkout contains an unsupported Git object")
+        path = repository / relative
+        expected = git_blob_payload(repository, object_name, environment)
+        if mode == "120000":
+            if path.is_symlink():
+                actual = os.fsencode(os.readlink(path))
+            elif os.name == "nt" and path.is_file():
+                actual = path.read_bytes()
+            else:
+                raise DependencyError("lint checkout symbolic link has the wrong type")
+        else:
+            if path.is_symlink() or not path.is_file():
+                raise DependencyError("lint checkout file has the wrong type")
+            actual = path.read_bytes()
+            if os.name != "nt":
+                executable = bool(path.stat().st_mode & stat.S_IXUSR)
+                expected_executable = mode == "100755"
+                if executable != expected_executable:
+                    raise DependencyError("lint checkout file mode does not match")
+        if actual != expected:
+            raise DependencyError("lint checkout bytes do not match the signed commit")
 
 
 def git(
@@ -615,6 +917,7 @@ def verify_lint_release(
     )
     manifest = load_json(manifest_path)
     isolated = dependency_git_environment(os.environ)
+    reject_executable_git_config(lint_root, isolated)
     actual_commit = git(
         lint_root,
         "rev-parse",
@@ -625,16 +928,6 @@ def verify_lint_release(
         raise DependencyError(
             f"lint checkout is {actual_commit}; expected {dependency['commit']}"
         )
-    tracked = git(
-        lint_root,
-        "status",
-        "--porcelain=v1",
-        "--ignored=matching",
-        "--untracked-files=all",
-        environment=isolated,
-    ).stdout
-    if tracked != "":
-        raise DependencyError("lint checkout is not clean")
     actual_tree = git(
         lint_root,
         "rev-parse",
@@ -644,20 +937,25 @@ def verify_lint_release(
     if actual_tree != dependency["tree"]:
         raise DependencyError("lint checkout tree does not match")
     ref = dependency["ref"]
-    if git_object_type(lint_root, ref, isolated) != "tag":
+    tag_object = dependency["tag_object"]
+    if git_object_type(lint_root, tag_object, isolated) != "tag":
         raise DependencyError("lint release ref is not an annotated tag")
     actual_tag_object = git(
         lint_root,
         "rev-parse",
-        ref,
+        f"{ref}^{{tag}}",
+        check=False,
         environment=isolated,
-    ).stdout.strip()
-    if actual_tag_object != dependency["tag_object"]:
+    )
+    if actual_tag_object.returncode != 0:
+        raise DependencyError("lint release ref does not resolve to a tag")
+    actual_tag_object_value = actual_tag_object.stdout.strip()
+    if actual_tag_object_value != dependency["tag_object"]:
         raise DependencyError("lint release tag object does not match")
     peeled_commit = git(
         lint_root,
         "rev-parse",
-        f"{ref}^{{commit}}",
+        f"{tag_object}^{{commit}}",
         environment=isolated,
     ).stdout.strip()
     if peeled_commit != dependency["commit"]:
@@ -666,9 +964,13 @@ def verify_lint_release(
         [
             "git",
             "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"gpg.ssh.program={trusted_ssh_keygen()}",
+            "-c",
             f"gpg.ssh.allowedSignersFile={allowed_signers_path}",
             "verify-tag",
-            ref,
+            tag_object,
         ],
         cwd=lint_root,
         check=False,
@@ -682,11 +984,24 @@ def verify_lint_release(
     signature_output = verification.stdout + verification.stderr
     if dependency["signer"] not in signature_output:
         raise DependencyError("lint release signature principal does not match")
-    image_digests = validate_release_manifest(manifest, lint_root, dependency)
+    verify_worktree_matches_commit(lint_root, dependency["commit"], isolated)
+    with tempfile.TemporaryDirectory(prefix="auto-lint-pr-verify-") as directory:
+        verified_root = Path(directory) / "lint"
+        materialize_git_tree(
+            lint_root,
+            dependency["commit"],
+            verified_root,
+            isolated,
+        )
+        image_digests = validate_release_manifest(
+            manifest,
+            verified_root,
+            dependency,
+        )
     release = manifest["release"]
     archive_sha = deterministic_archive_sha256(
         lint_root,
-        ref,
+        dependency["commit"],
         release,
         isolated,
     )
@@ -993,16 +1308,33 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         Path(arguments.dependency),
         Path(arguments.allowed_signers),
     )
+    runtime_manifest = dict(manifest)
     release_binding = manifest.pop("verified_dependency")
+    runtime_manifest.pop("verified_dependency", None)
     release_binding["images"] = selected_image_digests(
         release_binding["images"],
         arguments.language,
     )
-    run_checked(
-        lint_command(arguments, image_manifest=manifest_path),
-        cwd=repository,
-        environment=isolated,
-    )
+    with tempfile.TemporaryDirectory(prefix="auto-lint-pr-runtime-") as directory:
+        runtime_directory = Path(directory)
+        runtime_root = runtime_directory / "lint"
+        materialize_git_tree(
+            lint_root,
+            release_binding["commit"],
+            runtime_root,
+            dependency_git_environment(os.environ),
+        )
+        runtime_manifest_path = runtime_directory / "lint-release-manifest.json"
+        write_canonical(runtime_manifest_path, runtime_manifest)
+        run_checked(
+            lint_command(
+                arguments,
+                image_manifest=runtime_manifest_path,
+                runtime_root=runtime_root,
+            ),
+            cwd=repository,
+            environment=isolated,
+        )
     if sha256(manifest_path) != release_binding["manifest_sha256"]:
         raise DependencyError("lint release manifest changed during formatting")
     if arguments.hook is not None:
@@ -1342,6 +1674,19 @@ def remote_tip(
     if not isinstance(sha, str):
         raise SafetyError("remote branch query has no commit")
     return sha
+
+
+def require_remote_base_tip(
+    repository_name: str,
+    base: str,
+    expected: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Require the publication base to remain at the prepared commit."""
+
+    actual = remote_tip(repository_name, base, environment)
+    if actual != expected:
+        raise SafetyError("remote base branch changed after preparation")
 
 
 def open_pull_requests(
@@ -1878,13 +2223,12 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         raise SafetyError("publish requires --repository or GITHUB_REPOSITORY")
     repository_name = normalize_repository(repository_name)
     environment = require_token()
-    base_tip = remote_tip(
+    require_remote_base_tip(
         repository_name,
         state["base"],
+        state["base_head"],
         environment,
     )
-    if base_tip != state["base_head"]:
-        raise SafetyError("remote base branch changed after preparation")
     base_tree = remote_tree(
         repository_name,
         state["base_head"],
@@ -1937,6 +2281,12 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                         raise CommandError(
                             "pull request response is missing its number"
                         )
+                    require_remote_base_tip(
+                        repository_name,
+                        state["base"],
+                        state["base_head"],
+                        environment,
+                    )
                     apply_labels_and_reviewers(
                         repository_name,
                         number,
@@ -1999,6 +2349,13 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
             raise SafetyError(
                 "commit outcome is ambiguous; publication branch retained"
             ) from error
+
+    require_remote_base_tip(
+        repository_name,
+        state["base"],
+        state["base_head"],
+        environment,
+    )
 
     if pull_request is not None:
         pull_request = select_existing_pull_request(

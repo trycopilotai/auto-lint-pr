@@ -24,12 +24,19 @@ object, commit, tree, release-manifest checksum, and the
 checksum and principal of the controller-held
 allowed-signers file. Preparation verifies the operator
 signature, reproduces the source archive checksum from the
-signed tag, and validates the exact tool and language-image
-mappings before importing or running lint code.
+signed commit, rejects executable repository-local Git
+configuration, and compares checkout bytes and modes without
+trusting index flags. It validates the exact tool and
+language-image mappings before running lint from an isolated
+materialization of the authenticated commit.
 
 Docker formatting uses only the image names and SHA-256
 digests authenticated by that manifest. A version tag is not
-accepted as a runtime image reference.
+accepted as a runtime image reference. The reusable workflow
+uses a package-read credential only to prefetch those exact
+references with an isolated Docker configuration, then logs
+out and removes that configuration before the token-free
+formatter substep.
 
 ## Supported versions
 

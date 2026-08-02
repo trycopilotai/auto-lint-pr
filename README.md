@@ -10,15 +10,19 @@ Turn pinned
 formatter output into a reviewable pull request without
 granting the formatter step a write token.
 
-The transaction uses three jobs across two credential
-phases:
+The transaction uses three jobs with narrow credential
+boundaries:
 
-1. A token-free phase verifies the controller-bound lint
-   dependency ledger, signed tag, commit, tree, reproducible
-   archive checksum, and complete image digest set. It then
-   applies formatting with exact `image@sha256:...`
-   references, optionally runs one consumer command, and
-   records the exact file delta.
+1. A read-only prepare job verifies the controller-bound
+   lint dependency ledger and resolves the complete signed
+   image digest set. When Docker is active, one isolated
+   substep logs into GHCR, prefetches only those exact
+   `image@sha256:...` references, logs out, and removes its
+   Docker configuration. The following token-free substep
+   re-verifies the signed tag, commit, tree, and
+   reproducible archive checksum, executes lint from a
+   materialized copy of that exact commit, optionally runs
+   one consumer command, and records the exact file delta.
 2. A fresh read-only job restores and verifies that delta,
    then packages the exact base commit and pinned action
    source with path-bound receipts and checksums.
@@ -98,7 +102,10 @@ python3 auto_lint_pr.py publish \
 checkout and writes a receipt. `publish` fails if the state,
 receipt, base checkout, or prepared bytes and modes differ.
 The command-line phases assume a trusted local operator; use
-the reusable workflow for adversarial job isolation.
+the reusable workflow for adversarial job isolation. Release
+verification rejects executable repository-local Git
+configuration and compares actual checkout bytes and modes
+to the signed commit without trusting index flags.
 
 ## Composite action
 
@@ -117,6 +124,7 @@ them, and then supplies the write token:
     phase: prepare
     lint-root: dependencies/lint
     cwd: workspace
+    workspace-root: workspace
     state-path: ${{ runner.temp }}/auto-lint-state.json
     verification-path: ${{ runner.temp }}/verified.json
 
@@ -125,6 +133,7 @@ them, and then supplies the write token:
   with:
     phase: verify
     cwd: workspace
+    workspace-root: workspace
     state-path: ${{ runner.temp }}/auto-lint-state.json
     verification-path: ${{ runner.temp }}/verified.json
 
@@ -134,18 +143,23 @@ them, and then supplies the write token:
     phase: publish
     token: ${{ github.token }}
     cwd: workspace
+    workspace-root: workspace
     state-path: ${{ runner.temp }}/auto-lint-state.json
     verification-path: ${{ runner.temp }}/verified.json
 ```
 
-The action exposes `docker`, `modified`, `paths`,
-`files-from0`, `languages`, `hook`, `labels`, `reviewers`,
-`title`, and `body` inputs. The reusable workflow at
-`.github/workflows/auto-lint-pr.yml` supplies the complete
-three-job artifact bridge, fresh read-only checkouts, its
-permission ceiling, and per-repository/base concurrency. Its
-optional `checkout_token` secret is used only to read
-private dependency repositories. Publication always uses the
+The action exposes `workspace-root`, `docker`, `modified`,
+`paths`, `files-from0`, `languages`, `hook`, `labels`,
+`reviewers`, `title`, and `body` inputs. Action phases
+reject a `cwd` that resolves outside `workspace-root`. The
+reusable workflow at `.github/workflows/auto-lint-pr.yml`
+supplies the complete three-job artifact bridge, fresh
+read-only checkouts, its permission ceiling, and
+per-repository/base concurrency. Its optional
+`checkout_token` secret is used only to read private
+dependency repositories. Its optional `registry_token`
+secret must have package-read access and is used only for
+the isolated GHCR prefetch. Publication always uses the
 calling repository's `github.token`.
 
 ## Reusable workflow
@@ -208,6 +222,10 @@ for the other.
 - Every checkout sets `persist-credentials: false`.
 - A private dependency checkout token is never persisted or
   passed to the composite action or publication substep.
+- A private registry token is passed only to the
+  exact-digest prefetch substep. That substep uses an
+  isolated Docker configuration, logs out, and removes the
+  configuration before formatting starts.
 - Formatting and the optional hook do not receive GitHub
   tokens, Actions runtime tokens, or runner command-file
   paths.
@@ -222,6 +240,9 @@ for the other.
 - Publishing uses GitHub's expected-head commit mutation
   with the exact bytes recorded during token-free
   preparation.
+- The remote base ref is checked against the prepared commit
+  again immediately before pull request creation or metadata
+  updates.
 - Additions and modifications are limited to regular
   `100644` files, the mode represented by that mutation.
   Deletions are limited to the same regular-file mode.
@@ -242,14 +263,18 @@ for the other.
 - The source checkout must be clean before preparation.
 - A formatter or hook failure stops before branch or pull
   request operations.
-- The lint checkout must be clean. Its annotated tag,
-  operator signature, commit, tree, reproducible source
-  archive, tool map, and complete language-image digest set
-  must match `lint-dependency.json` and
-  `lint-release-manifest.json`. The trusted signer input is
-  held by this controller rather than accepted from the lint
-  checkout. Tracked, untracked, and ignored residue are all
-  rejected.
+- The lint checkout must exactly match the signed commit.
+  Its annotated tag, operator signature, commit, tree,
+  reproducible source archive, tool map, and complete
+  language-image digest set must match
+  `lint-dependency.json` and `lint-release-manifest.json`.
+  The trusted signer input is held by this controller rather
+  than accepted from the lint checkout. Actual bytes, modes,
+  tracked paths, untracked paths, and ignored residue are
+  checked independently of Git index flags.
+- Lint executes from an isolated materialization of the
+  authenticated commit rather than from mutable checkout
+  files.
 - Default Docker execution passes the verified release
   manifest to lint and runs only exact
   `ghcr.io/trycopilotai/lint-<language>@sha256:...`

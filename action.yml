@@ -29,6 +29,12 @@ inputs:
     description: "Consumer repository working directory"
     required: false
     default: "."
+  workspace-root:
+    description:
+      "Trusted checkout boundary containing cwd; set by the
+      reusable workflow"
+    required: false
+    default: "."
   base:
     description: "Pull request base branch"
     required: false
@@ -123,6 +129,7 @@ runs:
         INPUT_REVIEWERS: "${{ inputs.reviewers }}"
         INPUT_TITLE: "${{ inputs.title }}"
         INPUT_TOKEN: ""
+        INPUT_WORKSPACE_ROOT: "${{ inputs.workspace-root }}"
         LINT_ROOT: "${{ inputs.lint-root }}"
         STATE_PATH: "${{ inputs.state-path }}"
       run: >-
@@ -140,6 +147,7 @@ runs:
         INPUT_BASE: "${{ inputs.base }}"
         INPUT_CWD: "${{ inputs.cwd }}"
         INPUT_TOKEN: ""
+        INPUT_WORKSPACE_ROOT: "${{ inputs.workspace-root }}"
         STATE_PATH: "${{ inputs.state-path }}"
         VERIFICATION_PATH: "${{ inputs.verification-path }}"
       run: >-
@@ -159,6 +167,7 @@ runs:
         INPUT_LABELS: "${{ inputs.labels }}"
         INPUT_REVIEWERS: "${{ inputs.reviewers }}"
         INPUT_TITLE: "${{ inputs.title }}"
+        INPUT_WORKSPACE_ROOT: "${{ inputs.workspace-root }}"
         STATE_PATH: "${{ inputs.state-path }}"
         VERIFICATION_PATH: "${{ inputs.verification-path }}"
       run: >-

@@ -17,10 +17,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LINT_COMMIT = "d095640206c8f39cd968f81ce2e4bbcf8b03a0db"
-LINT_IMAGE_COMMIT = "3d5d4ee7b83b2c6442039b8a72a571c729ffcead"
-LINT_IMAGE_MANIFEST_SHA256 = (
-    "6e5472c878e45816a640fa453da78c4a560c7769636dfd542e980bb734eb01df"
-)
 LINT_MANIFEST = "lint-release-manifest.json"
 LINT_REF = "refs/tags/v0.1.5"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
@@ -29,6 +25,59 @@ LINT_TREE = "d7b643d6780c02ff32474b7ddde7e0da1c3d8f68"
 LINT_ALLOWED_SIGNERS_SHA256 = (
     "986887b24aba7609ef5086f1571de978bc2dbcd5f952efc21dbb127e9c1205f7"
 )
+LINT_LANGUAGE_IDS = {
+    "bazel",
+    "c",
+    "cpp",
+    "csharp",
+    "css",
+    "go",
+    "html",
+    "java",
+    "javascript",
+    "json",
+    "julia",
+    "kotlin",
+    "less",
+    "markdown",
+    "objective-c",
+    "objective-cpp",
+    "plist",
+    "python",
+    "requirements",
+    "rust",
+    "scss",
+    "shell",
+    "swift",
+    "toml",
+    "tsx",
+    "typescript",
+    "xml",
+    "yaml",
+}
+
+
+def reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject ambiguous checked-in trust documents."""
+
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON field: {key}")
+        value[key] = item
+    return value
+
+
+def load_trust_json(path: Path) -> dict[str, object]:
+    """Load one trust document with duplicate-key rejection."""
+
+    value = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicate_pairs,
+    )
+    if not isinstance(value, dict):
+        raise ValueError(f"trust document must be an object: {path.name}")
+    return value
 
 
 def verify_skill_entry(skill: Path, platform_name: str) -> None:
@@ -102,6 +151,7 @@ def verify_required_paths() -> None:
         "lint-dependency.json",
         "lint-release-manifest.json",
         "skills/auto-lint-pr/SKILL.md",
+        "tools/prefetch_images.py",
         "tools/verify_release.py",
     )
     for relative in required:
@@ -134,52 +184,65 @@ def verify_plugins() -> None:
             raise ValueError(f"wrong plugin version: {relative}")
 
 
-def verify_lint_manifest() -> None:
-    path = ROOT / LINT_MANIFEST
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("schema_version") != 2:
-        raise ValueError("lint release manifest has the wrong schema")
+def verify_lint_manifest(path: Path | None = None) -> None:
+    if path is None:
+        path = ROOT / LINT_MANIFEST
+    value = load_trust_json(path)
+    if value.get("schema_version") != 1:
+        raise ValueError("lint release manifest must be repinned to final schema 1")
+    expected_fields = {
+        "images",
+        "release",
+        "schema_version",
+        "source",
+        "tools",
+    }
+    if set(value) != expected_fields:
+        raise ValueError("lint release manifest has unexpected fields")
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValueError("lint release manifest has no source")
     if source.get("commit") != LINT_COMMIT:
         raise ValueError("lint release manifest has the wrong commit")
+    expected_source_fields = {"archive", "commit", "sha256"}
+    if set(source) != expected_source_fields:
+        raise ValueError("lint release source has unexpected fields")
     digest = source.get("sha256")
     if not isinstance(digest, str):
         raise ValueError("lint release archive has no checksum")
     if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise ValueError("lint release archive checksum is invalid")
+    release = value.get("release")
+    if release != "0.1.5":
+        raise ValueError("lint release manifest has the wrong release")
+    if LINT_REF != f"refs/tags/v{release}":
+        raise ValueError("lint release manifest and ref do not match")
+    if source.get("archive") != f"lint-{release}.tar.gz":
+        raise ValueError("lint release archive name does not match")
+    tools = value.get("tools")
+    if not isinstance(tools, dict) or not tools:
+        raise ValueError("lint release manifest has no tool record")
+    for tool, version in tools.items():
+        if not isinstance(tool, str) or not isinstance(version, str):
+            raise ValueError("lint release tool records must be strings")
     images = value.get("images")
     if not isinstance(images, dict):
         raise ValueError("lint release manifest has no image record")
-    if images.get("release") != "0.1.4":
-        raise ValueError("lint release manifest has the wrong image release")
-    if images.get("source_commit") != LINT_IMAGE_COMMIT:
-        raise ValueError("lint release manifest has the wrong image commit")
-    inheritance = images.get("inheritance")
-    if not isinstance(inheritance, dict):
-        raise ValueError("lint release manifest has no image inheritance")
-    if inheritance.get("inputs_unchanged") is not True:
-        raise ValueError("lint release image inputs are not verified unchanged")
-    if inheritance.get("prior_manifest_sha256") != LINT_IMAGE_MANIFEST_SHA256:
-        raise ValueError("lint release prior manifest checksum is wrong")
-    digests = images.get("digests")
-    if not isinstance(digests, dict):
-        raise ValueError("lint release manifest has no image digests")
-    if len(digests) != 26:
-        raise ValueError("lint release manifest must bind 26 images")
-    for image, image_digest in digests.items():
+    expected_images = {
+        f"ghcr.io/trycopilotai/lint-{language}" for language in LINT_LANGUAGE_IDS
+    }
+    if set(images) != expected_images:
+        raise ValueError("lint release manifest image coverage is incomplete")
+    for image, image_digest in images.items():
         if not image.startswith("ghcr.io/trycopilotai/lint-"):
             raise ValueError(f"unexpected lint image: {image}")
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
             raise ValueError(f"invalid lint image digest: {image}")
-    if value.get("release") != "0.1.5":
-        raise ValueError("lint release manifest has the wrong release")
 
 
 def verify_lint_dependency() -> None:
     path = ROOT / "lint-dependency.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = load_trust_json(path)
     expected = {
         "allowed_signers_sha256": LINT_ALLOWED_SIGNERS_SHA256,
         "commit": LINT_COMMIT,
@@ -240,8 +303,10 @@ def verify_actions(files: list[Path]) -> None:
         '"fixtures/integration/requirements.txt"',
         "pinned-lint-docker:",
         "Authenticated exact-digest prefetch",
+        "tools/prefetch_images.py",
         'docker pull "$image"',
         "docker logout ghcr.io",
+        "grep -F -q 'ghcr.io'",
         'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"',
         "formatter-must-not-receive",
         'state["lint_release"]["images"][name]',
@@ -255,6 +320,8 @@ def verify_actions(files: list[Path]) -> None:
     )
     if "secrets.checkout_token" not in reusable:
         raise ValueError("reusable workflow has no private checkout token")
+    if "secrets.registry_token" not in reusable:
+        raise ValueError("reusable workflow has no private registry token")
     if 'token: "${{ github.token }}"' not in reusable:
         raise ValueError("publication does not use the repository token")
     if 'repository: "${{ job.workflow_repository }}"' not in reusable:
@@ -271,6 +338,20 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("reusable workflow has no isolated publish job")
     prepare, remaining = reusable.split("\n  verify:\n", maxsplit=1)
     verify, publish = remaining.split("\n  publish:\n", maxsplit=1)
+    if "packages: read" not in prepare:
+        raise ValueError("prepare job cannot read private lint images")
+    if "Prefetch private images by exact digest" not in prepare:
+        raise ValueError("prepare job does not prefetch private lint images")
+    if "tools/prefetch_images.py" not in prepare:
+        raise ValueError("prepare job bypasses the trusted image resolver")
+    if "docker logout ghcr.io" not in prepare:
+        raise ValueError("prepare job does not log out from the registry")
+    if "grep -F -q 'ghcr.io'" not in prepare:
+        raise ValueError("prepare job could expose residual registry credentials")
+    if 'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"' not in prepare:
+        raise ValueError("formatter does not use a clean Docker configuration")
+    if prepare.count("workspace-root: workspace") != 1:
+        raise ValueError("prepare action has no checkout boundary")
     if 'token: "${{ github.token }}"' in prepare:
         raise ValueError("prepare job receives the publication token")
     if 'token: "${{ github.token }}"' in verify:
@@ -284,6 +365,8 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("verify job action checkout credential is wrong")
     if "phase: verify" not in verify:
         raise ValueError("verify job does not run the verification phase")
+    if verify.count("workspace-root: workspace") != 1:
+        raise ValueError("verify action has no checkout boundary")
     if "consumer-base.bundle" not in verify:
         raise ValueError("verify job does not package the exact consumer base")
     if "auto-lint-pr.tar.gz" not in verify:
@@ -294,6 +377,10 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("publish job performs a network checkout")
     if checkout_token in publish:
         raise ValueError("checkout credential enters the publish job")
+    if "secrets.registry_token" in publish:
+        raise ValueError("registry credential enters the publish job")
+    if publish.count("workspace-root: workspace") != 1:
+        raise ValueError("publish action has no checkout boundary")
     for required in (
         "action-archive-sha",
         "consumer-bundle-sha",
@@ -358,6 +445,10 @@ def verify_actions(files: list[Path]) -> None:
 
 def verify_action_boundary() -> None:
     text = (ROOT / "action.yml").read_text(encoding="utf-8")
+    if "workspace-root:" not in text:
+        raise ValueError("action does not declare a checkout boundary")
+    if text.count("INPUT_WORKSPACE_ROOT:") != 3:
+        raise ValueError("action phases do not receive the checkout boundary")
     marker = "    - name: Publish exact verified delta"
     if marker not in text:
         raise ValueError("action publish step is missing")
@@ -378,6 +469,9 @@ def verify_action_boundary() -> None:
     for name in ("GITHUB_ACTION_PATH", "GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH"):
         if f'"{name}"' not in implementation:
             raise ValueError(f"token-free child environment retains {name}")
+    entrypoint = (ROOT / "action_entrypoint.py").read_text(encoding="utf-8")
+    if "INPUT_CWD must stay within INPUT_WORKSPACE_ROOT" not in entrypoint:
+        raise ValueError("action entrypoint does not enforce the checkout boundary")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     setting = "Allow GitHub Actions to create and approve"
     if setting not in readme:

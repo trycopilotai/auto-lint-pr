@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -130,6 +131,47 @@ class ActionCommandTest(unittest.TestCase):
         with mock.patch.dict(os.environ, environment, clear=True):
             with self.assertRaises(ValueError):
                 ENTRYPOINT.command("prepare")
+
+    def test_action_cwd_must_stay_inside_workspace_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            outside = root / "outside"
+            workspace.mkdir()
+            outside.mkdir()
+            environment = {
+                "GITHUB_ACTION_PATH": str(ROOT),
+                "GITHUB_REPOSITORY": "owner/repository",
+                "INPUT_BASE": "main",
+                "INPUT_CWD": str(outside),
+                "INPUT_WORKSPACE_ROOT": str(workspace),
+                "LINT_ROOT": "/lint",
+                "STATE_PATH": "/state.json",
+            }
+
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with self.assertRaisesRegex(ValueError, "INPUT_WORKSPACE_ROOT"):
+                    ENTRYPOINT.command("prepare")
+
+    def test_action_cwd_accepts_a_nested_workspace_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            nested = workspace / "nested"
+            nested.mkdir(parents=True)
+            environment = {
+                "GITHUB_ACTION_PATH": str(ROOT),
+                "GITHUB_REPOSITORY": "owner/repository",
+                "INPUT_BASE": "main",
+                "INPUT_CWD": str(nested),
+                "INPUT_WORKSPACE_ROOT": str(workspace),
+                "LINT_ROOT": "/lint",
+                "STATE_PATH": "/state.json",
+            }
+
+            with mock.patch.dict(os.environ, environment, clear=True):
+                command = ENTRYPOINT.command("prepare")
+
+            self.assertEqual(str(nested.resolve()), command[command.index("--cwd") + 1])
 
 
 if __name__ == "__main__":

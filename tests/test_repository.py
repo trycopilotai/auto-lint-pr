@@ -88,6 +88,13 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("issues: write", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("secrets.checkout_token", text)
+        self.assertIn("secrets.registry_token", text)
+        self.assertIn("packages: read", text)
+        self.assertIn("Prefetch private images by exact digest", text)
+        self.assertIn("docker logout ghcr.io", text)
+        self.assertIn("grep -F -q 'ghcr.io'", text)
+        self.assertIn('DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"', text)
+        self.assertIn("workspace-root: workspace", text)
         self.assertIn('token: "${{ github.token }}"', text)
         self.assertIn(
             'repository: "${{ job.workflow_repository }}"',
@@ -116,6 +123,7 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("fetch-depth: 0", consumer_checkout)
         self.assertNotIn("actions/checkout@", publish)
         self.assertNotIn("secrets.checkout_token", publish)
+        self.assertNotIn("secrets.registry_token", publish)
         self.assertIn("auto-lint-pr-publication", publish)
         self.assertIn('GH_TOKEN: ""', publish)
         self.assertIn('GITHUB_TOKEN: ""', publish)
@@ -252,8 +260,10 @@ class WorkflowMetadataTest(unittest.TestCase):
 
         self.assertIn("pinned-lint-docker:", workflow)
         self.assertIn("Authenticated exact-digest prefetch", workflow)
+        self.assertIn("tools/prefetch_images.py", workflow)
         self.assertIn('docker pull "$image"', workflow)
         self.assertIn("docker logout ghcr.io", workflow)
+        self.assertIn("grep -F -q 'ghcr.io'", workflow)
         self.assertIn(
             'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"',
             workflow,
@@ -261,6 +271,25 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("formatter-must-not-receive", workflow)
         self.assertIn('state["lint_release"]["images"][name]', workflow)
         self.assertNotIn("lint-requirements:v", workflow)
+
+    def test_transitional_lint_manifest_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "lint-release-manifest.json"
+            value = json.loads(
+                (ROOT / "lint-release-manifest.json").read_text(encoding="utf-8")
+            )
+            value["schema_version"] = 2
+            manifest.write_text(
+                json.dumps(value),
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "repinned to final schema 1",
+            ):
+                verify_repo.verify_lint_manifest(manifest)
 
     def test_external_actions_use_commit_references(self) -> None:
         pattern = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")
