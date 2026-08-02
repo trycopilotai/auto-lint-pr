@@ -108,6 +108,9 @@ class WorkflowMetadataTest(unittest.TestCase):
     def test_ci_exercises_token_free_auto_lint_transaction(self) -> None:
         text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
+        self.assertIn("python -m unittest discover", text)
+        self.assertIn("python tools/verify_repo.py", text)
+        self.assertNotIn("make verify", text)
         self.assertIn("python3 auto_lint_pr.py prepare", text)
         self.assertIn("--lint-root ../lint", text)
         self.assertIn("--cwd fixtures/integration", text)
@@ -224,6 +227,12 @@ class InstallMetadataTest(unittest.TestCase):
             "trycopilotai/auto-lint-pr/.github/workflows/" "auto-lint-pr.yml@v0.1.0",
             text,
         )
+
+    def test_readme_requires_prepare_for_positional_paths(self) -> None:
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Positional paths require the", text)
+        self.assertIn("python3 auto_lint_pr.py prepare", text)
 
 
 class LaunchSurfaceTest(unittest.TestCase):

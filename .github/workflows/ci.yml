@@ -40,7 +40,9 @@ jobs:
         with:
           python-version: "${{ matrix.python }}"
       - name: Verify repository
-        run: make verify PYTHON=python
+        run: |
+          python -m unittest discover -s tests -p "test_*.py"
+          python tools/verify_repo.py
 
   format:
     runs-on: ubuntu-latest

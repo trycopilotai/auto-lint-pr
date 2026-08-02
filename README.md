@@ -52,8 +52,16 @@ python3 auto_lint_pr.py \
 The default formats all supported files in Docker write
 mode. Use `--local` only when the exact local formatter
 toolchain is already provisioned. Selection can instead use
-`--modified`, positional paths, or `--files-from0`. Repeat
-`--language` to restrict formatter families.
+`--modified` or `--files-from0`. Repeat `--language` to
+restrict formatter families. Positional paths require the
+explicit `prepare` phase so they are not parsed as a phase
+name:
+
+```sh
+python3 auto_lint_pr.py prepare \
+  --lint-root /absolute/path/to/lint \
+  src/example.py
+```
 
 Use `--hook '<command>'` to run a consumer generator or
 check after formatting. The hook and formatter share the
