@@ -465,11 +465,17 @@ class BranchSafetyTest(unittest.TestCase):
             "wasSignedByGitHub": True,
         }
 
+        path_pages = [
+            {
+                "files": [{"filename": "one.txt"}],
+                "sha": tip,
+            }
+        ]
         with (
             mock.patch.object(
                 AUTO_LINT_PR,
                 "gh_api",
-                return_value=response,
+                side_effect=[response, path_pages],
             ),
             mock.patch.object(
                 AUTO_LINT_PR,
@@ -481,10 +487,12 @@ class BranchSafetyTest(unittest.TestCase):
                 "owner/repository",
                 base,
                 tip,
+                {"one.txt"},
                 {"GH_TOKEN": "token"},
             )
 
         self.assertEqual([tip], [record["sha"] for record in commits])
+        self.assertEqual(["one.txt"], commits[0]["changed_paths"])
 
         for status, merge_base in (
             ("diverged", base),
@@ -504,8 +512,106 @@ class BranchSafetyTest(unittest.TestCase):
                             "owner/repository",
                             base,
                             tip,
+                            {"one.txt"},
                             {"GH_TOKEN": "token"},
                         )
+
+    def test_branch_commits_reject_intermediate_unprepared_paths(self) -> None:
+        base = "a" * 40
+        tip = "b" * 40
+        commit = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "verification": {"verified": True},
+            },
+            "sha": tip,
+        }
+        comparison = {
+            "commits": [commit],
+            "merge_base_commit": {"sha": base},
+            "status": "ahead",
+            "total_commits": 1,
+        }
+        path_pages = [
+            {
+                "files": [
+                    {"filename": "prepared.txt"},
+                    {"filename": "unrelated.txt"},
+                ],
+                "sha": tip,
+            }
+        ]
+        signature = {
+            "isValid": True,
+            "wasSignedByGitHub": True,
+        }
+
+        with (
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "gh_api",
+                side_effect=[comparison, path_pages],
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "github_commit_signature",
+                return_value=signature,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "paths outside the prepared delta",
+            ):
+                AUTO_LINT_PR.branch_commits(
+                    "owner/repository",
+                    base,
+                    tip,
+                    {"prepared.txt"},
+                    {"GH_TOKEN": "token"},
+                )
+
+    def test_commit_paths_accumulate_pages_and_rename_sources(self) -> None:
+        oid = "a" * 40
+        pages = [
+            {
+                "files": [{"filename": "one.txt"}],
+                "sha": oid,
+            },
+            {
+                "files": [
+                    {
+                        "filename": "three.txt",
+                        "previous_filename": "two.txt",
+                    }
+                ],
+                "sha": oid,
+            },
+        ]
+        with mock.patch.object(
+            AUTO_LINT_PR,
+            "gh_api",
+            return_value=pages,
+        ) as api:
+            paths = AUTO_LINT_PR.commit_changed_paths(
+                "owner/repository",
+                oid,
+                {"GH_TOKEN": "token"},
+            )
+
+        self.assertEqual({"one.txt", "two.txt", "three.txt"}, paths)
+        self.assertEqual(
+            [
+                "--paginate",
+                "--slurp",
+                "--method",
+                "GET",
+                f"repos/owner/repository/commits/{oid}?per_page=100",
+            ],
+            api.call_args.args[0],
+        )
 
     def test_signature_query_is_bound_to_repository_and_commit(
         self,

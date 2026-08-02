@@ -267,7 +267,18 @@ class WorkflowMetadataTest(unittest.TestCase):
 
         self.assertIn("gpg.format=ssh", workflow)
         self.assertIn(
-            "gpg.ssh.allowedSignersFile=.github/release-allowed-signers",
+            "gpg.ssh.allowedSignersFile=",
+            workflow,
+        )
+        self.assertIn(
+            "ref: cc4d422edf9f081ffcba6efa003b4340cd132167",
+            workflow,
+        )
+        self.assertIn("path: release-trust", workflow)
+        self.assertIn("sparse-checkout-cone-mode: false", workflow)
+        self.assertIn("working-directory: release-source", workflow)
+        self.assertIn(
+            "$GITHUB_WORKSPACE/release-trust/.github/release-allowed-signers",
             workflow,
         )
         self.assertIn('verify-tag "$RELEASE_REF"', workflow)

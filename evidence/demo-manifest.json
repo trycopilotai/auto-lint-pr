@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "dcf775bc4c337c0eaa554b31de0656b06a3ca816c620503d2eb73132d1d21ddc"
+    "sha256": "8cb6e8194ed42d139dc82efc95c36521a711cce9b68169e1f69e8f63cdf08d75"
   },
   "invocation": {
     "path": "scripts/demo.sh",

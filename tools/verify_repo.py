@@ -304,7 +304,11 @@ def verify_actions(files: list[Path]) -> None:
     )
     for required in (
         "gpg.format=ssh",
-        "gpg.ssh.allowedSignersFile=.github/release-allowed-signers",
+        "gpg.ssh.allowedSignersFile=",
+        "cc4d422edf9f081ffcba6efa003b4340cd132167",
+        "release-trust/.github/release-allowed-signers",
+        "sparse-checkout-cone-mode: false",
+        "working-directory: release-source",
         'verify-tag "$RELEASE_REF"',
         "release-commit:",
         "release-tag-object:",

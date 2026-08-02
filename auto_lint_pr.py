@@ -1006,10 +1006,59 @@ query($owner: String!, $name: String!, $oid: GitObjectID!) {
     return signature
 
 
+def commit_changed_paths(
+    repository_name: str,
+    oid: str,
+    environment: Mapping[str, str],
+) -> set[str]:
+    """Return the complete bounded path set changed by one commit."""
+
+    repository_name = normalize_repository(repository_name)
+    value = gh_api(
+        [
+            "--paginate",
+            "--slurp",
+            "--method",
+            "GET",
+            f"repos/{repository_name}/commits/{oid}?per_page=100",
+        ],
+        environment,
+    )
+    if not isinstance(value, list) or not value:
+        raise CommandError("commit path query returned no pages")
+    paths = set()
+    for page in value:
+        if not isinstance(page, dict) or page.get("sha") != oid:
+            raise CommandError("commit path query returned the wrong commit")
+        files = page.get("files")
+        if not isinstance(files, list):
+            raise CommandError("commit path query has no file inventory")
+        for record in files:
+            if not isinstance(record, dict):
+                raise CommandError("commit path record is invalid")
+            filename = record.get("filename")
+            if not isinstance(filename, str) or filename == "":
+                raise CommandError("commit path record has no filename")
+            paths.add(filename)
+            previous_filename = record.get("previous_filename")
+            if previous_filename is not None:
+                if not isinstance(previous_filename, str) or previous_filename == "":
+                    raise CommandError(
+                        "commit path record has an invalid previous filename"
+                    )
+                paths.add(previous_filename)
+    if not paths:
+        raise SafetyError("auto-lint branch commit has no changed paths")
+    if len(paths) >= 3000:
+        raise SafetyError("auto-lint branch commit exceeds the path audit bound")
+    return paths
+
+
 def branch_commits(
     repository_name: str,
     base: str,
     tip: str,
+    prepared_paths: set[str],
     environment: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Return the bounded branch-only commit inventory."""
@@ -1044,6 +1093,17 @@ def branch_commits(
             oid,
             environment,
         )
+        paths = commit_changed_paths(
+            repository_name,
+            oid,
+            environment,
+        )
+        unexpected = paths - prepared_paths
+        if unexpected:
+            raise SafetyError(
+                "auto-lint branch commit changed paths outside the prepared delta"
+            )
+        record["changed_paths"] = sorted(paths)
     validate_branch_commits(commits)
     return commits
 
@@ -1390,6 +1450,7 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                 repository_name,
                 state["base_head"],
                 tip,
+                {record["path"] for record in state["delta"]},
                 environment,
             )
             branch_tree = remote_tree(repository_name, tip, environment)

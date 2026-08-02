@@ -5,7 +5,9 @@ later public launch operations.
 
 ## Private release verification
 
-- Verify the signed tag and exact commit.
+- Verify the signed tag and exact commit against the signer
+  policy pinned by immutable commit in the release workflow;
+  never read the trust policy from the release tag itself.
 - Run the complete repository check.
 - Create the deterministic source archive and checksums.
 - Keep the GitHub Release in draft state.

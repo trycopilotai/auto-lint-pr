@@ -22,6 +22,9 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: release-source
     outputs:
       release-commit: "${{ steps.release.outputs.commit }}"
       release-tag-object:
@@ -33,6 +36,15 @@ jobs:
           ref: "${{ env.RELEASE_REF }}"
           fetch-depth: 0
           persist-credentials: false
+          path: release-source
+      - name: Check out immutable release trust policy
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: cc4d422edf9f081ffcba6efa003b4340cd132167
+          persist-credentials: false
+          path: release-trust
+          sparse-checkout: .github/release-allowed-signers
+          sparse-checkout-cone-mode: false
       - name: Verify signed release tag and exact commit
         id: release
         shell: bash
@@ -41,7 +53,7 @@ jobs:
           test "$(git cat-file -t "$RELEASE_REF")" = "tag"
           git \
             -c gpg.format=ssh \
-            -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers \
+            -c gpg.ssh.allowedSignersFile="$GITHUB_WORKSPACE/release-trust/.github/release-allowed-signers" \
             verify-tag "$RELEASE_REF"
           test "$(git rev-list -n 1 "$RELEASE_REF")" = \
             "$(git rev-parse HEAD)"
