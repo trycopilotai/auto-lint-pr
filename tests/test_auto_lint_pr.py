@@ -1097,6 +1097,25 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             ):
                 AUTO_LINT_PR.run_verify(arguments)
 
+    def test_binding_rejects_a_different_trusted_repository(self) -> None:
+        arguments = AUTO_LINT_PR.parser().parse_args(
+            [
+                "verify",
+                "--repository",
+                "trusted/repository",
+            ]
+        )
+        state = {
+            "base": "main",
+            "repository": "other/repository",
+        }
+
+        with self.assertRaisesRegex(
+            AUTO_LINT_PR.SafetyError,
+            "trusted repository",
+        ):
+            AUTO_LINT_PR.validate_transaction_binding(arguments, state)
+
     def test_publish_rejects_state_changed_after_verification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
