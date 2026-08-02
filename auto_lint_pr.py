@@ -728,9 +728,13 @@ def verify_prior_receipt(
 ) -> None:
     """Bind publication to the preceding token-free verification step."""
 
-    if arguments.verification is None:
-        return
-    receipt = load_json(Path(arguments.verification).resolve())
+    verification_path = arguments.verification
+    if verification_path is None:
+        verification_path = str(state_path.with_suffix(".verified.json"))
+    receipt_path = Path(verification_path).resolve()
+    if not receipt_path.is_file():
+        raise SafetyError("token-free verification receipt is missing")
+    receipt = load_json(receipt_path)
     expected = {
         "base_head": state["base_head"],
         "cwd": str(repository),
@@ -899,18 +903,26 @@ def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
         raise SafetyError("existing auto-lint branch has no unique commits")
     for record in commits:
         author = record.get("author")
+        committer = record.get("committer")
         commit = record.get("commit")
         if not isinstance(author, dict) or author.get("login") != BOT_LOGIN:
             raise SafetyError("auto-lint branch has a non-bot author")
+        if not isinstance(committer, dict) or committer.get("login") != BOT_LOGIN:
+            raise SafetyError("auto-lint branch has a non-bot committer")
         if not isinstance(commit, dict):
             raise SafetyError("auto-lint branch commit metadata is missing")
         raw_author = commit.get("author")
+        raw_committer = commit.get("committer")
         verification = commit.get("verification")
         signature = record.get("github_signature")
         if not isinstance(raw_author, dict):
             raise SafetyError("auto-lint branch author metadata is missing")
         if raw_author.get("email") != BOT_EMAIL:
             raise SafetyError("auto-lint branch author email is not the bot")
+        if not isinstance(raw_committer, dict):
+            raise SafetyError("auto-lint branch committer metadata is missing")
+        if raw_committer.get("email") != BOT_EMAIL:
+            raise SafetyError("auto-lint branch committer email is not the bot")
         if not isinstance(verification, dict):
             raise SafetyError("auto-lint branch signature metadata is missing")
         if verification.get("verified") is not True:
@@ -993,6 +1005,11 @@ def branch_commits(
     )
     if not isinstance(value, dict):
         raise CommandError("branch comparison did not return an object")
+    merge_base = value.get("merge_base_commit")
+    if value.get("status") != "ahead":
+        raise SafetyError("auto-lint branch does not descend from the exact base")
+    if not isinstance(merge_base, dict) or merge_base.get("sha") != base:
+        raise SafetyError("auto-lint branch has a different merge base")
     commits = value.get("commits")
     total = value.get("total_commits")
     if not isinstance(commits, list) or not isinstance(total, int):
