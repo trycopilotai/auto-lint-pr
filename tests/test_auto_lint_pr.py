@@ -722,6 +722,28 @@ class BranchSafetyTest(unittest.TestCase):
             AUTO_LINT_PR.branch_name("Feature/One"),
         )
 
+    def test_failed_branch_creation_is_not_reconciled_as_owned(self) -> None:
+        with (
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "gh_api",
+                side_effect=AUTO_LINT_PR.CommandError("creation failed"),
+            ),
+            mock.patch.object(AUTO_LINT_PR, "remote_tip") as remote_tip,
+        ):
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "outcome is ambiguous",
+            ):
+                AUTO_LINT_PR.create_remote_branch(
+                    "owner/repository",
+                    "auto-lint/main",
+                    "a" * 40,
+                    {"GH_TOKEN": "token"},
+                )
+
+        remote_tip.assert_not_called()
+
     def test_existing_pull_request_must_match_base_and_head(self) -> None:
         pull_requests = [
             {
@@ -1218,6 +1240,60 @@ class TransactionTest(unittest.TestCase):
                 AUTO_LINT_PR.changed_paths(repository)
 
             self.assertFalse(marker.exists())
+
+    def test_staged_rename_records_source_deletion_and_restores_exactly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            (repository / "source.txt").write_text(
+                "content\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            commit_all(repository)
+            verification = root / "verification"
+            subprocess.run(
+                ["git", "clone", "-q", str(repository), str(verification)],
+                check=True,
+            )
+            run_git(repository, "mv", "source.txt", "destination.txt")
+
+            records = AUTO_LINT_PR.delta_records(repository)
+
+            self.assertEqual(
+                [
+                    ("destination.txt", "file"),
+                    ("source.txt", "deleted"),
+                ],
+                [(record["path"], record["kind"]) for record in records],
+            )
+            AUTO_LINT_PR.restore_prepared_delta(verification, records)
+            AUTO_LINT_PR.assert_delta(verification, records)
+
+    def test_default_state_path_is_beneath_selected_cwd_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            outside = root / "outside"
+            outside.mkdir()
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                ["prepare", "--cwd", str(repository)]
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(outside)
+                state_path = AUTO_LINT_PR.transaction_state_path(arguments)
+            finally:
+                os.chdir(previous)
+
+            self.assertEqual(
+                (repository / ".git" / "auto-lint-pr-state.json").resolve(),
+                state_path,
+            )
 
     def test_no_change_prepare_records_false(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1972,6 +2048,80 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
             self.assertFalse(result["changed"])
             self.assertIsNone(result["pull_request"])
+
+    def test_publish_rejects_unowned_branch_that_still_points_to_base(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": True,
+                        "cwd": str(repository),
+                        "delta": AUTO_LINT_PR.delta_records(repository),
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
+                        "repository": "owner/repository",
+                        "schema": 2,
+                    }
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            write_default_verification_receipt(repository, state_path)
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, head],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    return_value=base_tree,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                ) as create_commit,
+            ):
+                with self.assertRaisesRegex(
+                    AUTO_LINT_PR.SafetyError,
+                    "no ownership proof",
+                ):
+                    AUTO_LINT_PR.run_publish(arguments)
+
+            create_commit.assert_not_called()
 
     def test_publish_requires_token_free_verification_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

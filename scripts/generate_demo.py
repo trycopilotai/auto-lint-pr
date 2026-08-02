@@ -9,6 +9,8 @@ import html
 import importlib.util
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,7 @@ TOKEN_NAMES = (
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_RUNTIME_TOKEN",
 )
+GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 def isolated_git_environment(
@@ -231,8 +234,8 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
             ):
                 state = AUTO_LINT_PR.run_prepare(arguments)
             return {
-                "input_commit": consumer_commit,
-                "lint_commit": lint_commit,
+                "fixture_consumer_commit": consumer_commit,
+                "fixture_lint_commit": lint_commit,
                 "state": state,
             }
         finally:
@@ -262,8 +265,8 @@ def transcript() -> tuple[str, dict[str, str]]:
         "publish phase: not run in this token-free demo",
     ]
     run = {
-        "input_commit": str(result["input_commit"]),
-        "lint_commit": str(result["lint_commit"]),
+        "fixture_consumer_commit": str(result["fixture_consumer_commit"]),
+        "fixture_lint_commit": str(result["fixture_lint_commit"]),
     }
     return "\n".join(lines) + "\n", run
 
@@ -337,7 +340,10 @@ def artifact_record(relative: str) -> dict[str, str]:
     }
 
 
-def demo_manifest(run: dict[str, str]) -> str:
+def demo_manifest(
+    run: dict[str, str],
+    metadata: dict[str, str],
+) -> str:
     """Derive the evidence manifest from the artifacts that own each fact."""
 
     value = {
@@ -348,13 +354,14 @@ def demo_manifest(run: dict[str, str]) -> str:
         "output": artifact_record("evidence/demo-transcript.txt"),
         "poster": artifact_record("assets/poster.svg"),
         "run": {
-            "agent": "generate_demo.py",
-            "agent_version": "1.0.0",
+            "agent": metadata["agent"],
+            "agent_version": metadata["agent_version"],
             "date": EVIDENCE_DATE,
             "edited": False,
-            "input_commit": run["input_commit"],
-            "invocation": "./scripts/demo.sh",
-            "lint_commit": run["lint_commit"],
+            "fixture_consumer_commit": run["fixture_consumer_commit"],
+            "fixture_lint_commit": run["fixture_lint_commit"],
+            "input_commit": metadata["input_commit"],
+            "invocation": metadata["invocation"],
             "output_sha256": sha256(TRANSCRIPT_PATH),
             "protocol_sha256": sha256(ROOT / "skills" / "auto-lint-pr" / "SKILL.md"),
         },
@@ -368,15 +375,91 @@ def demo_manifest(run: dict[str, str]) -> str:
 
 def parser() -> argparse.ArgumentParser:
     argument_parser = argparse.ArgumentParser()
-    argument_parser.add_argument("--check", action="store_true")
-    argument_parser.add_argument("--write", action="store_true")
+    mode = argument_parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true")
+    mode.add_argument("--write", action="store_true")
+    argument_parser.add_argument("--input-commit")
+    argument_parser.add_argument("--agent")
+    argument_parser.add_argument("--agent-version")
     return argument_parser
+
+
+def require_candidate_commit(value: str) -> str:
+    """Require a full candidate commit reachable from the current checkout."""
+
+    if GIT_COMMIT_PATTERN.fullmatch(value) is None:
+        raise ValueError("demo input commit must be a full SHA-1 commit")
+    resolved = git(ROOT, "rev-parse", f"{value}^{{commit}}")
+    if resolved != value:
+        raise ValueError("demo input commit does not resolve exactly")
+    completed = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", value, "HEAD"],
+        cwd=ROOT,
+        check=False,
+        env=isolated_git_environment(),
+    )
+    if completed.returncode != 0:
+        raise ValueError("demo input commit is not reachable from HEAD")
+    return value
+
+
+def recorded_invocation() -> str:
+    """Record the real generator invocation in a repository-relative form."""
+
+    script = Path(sys.argv[0]).resolve()
+    try:
+        script_value = script.relative_to(ROOT).as_posix()
+    except ValueError:
+        script_value = str(script)
+    executable = Path(sys.executable).name
+    return shlex.join([executable, script_value, *sys.argv[1:]])
+
+
+def manifest_metadata(arguments: argparse.Namespace) -> dict[str, str]:
+    """Load check metadata or bind a write to its actual invocation."""
+
+    if arguments.check:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        run = manifest.get("run")
+        if not isinstance(run, dict):
+            raise ValueError("demo manifest run metadata is missing")
+        metadata = {}
+        for name in ("agent", "agent_version", "input_commit", "invocation"):
+            value = run.get(name)
+            if not isinstance(value, str) or value == "":
+                raise ValueError(f"demo manifest has an invalid {name}")
+            metadata[name] = value
+    else:
+        values = {
+            "agent": arguments.agent,
+            "agent_version": arguments.agent_version,
+            "input_commit": arguments.input_commit,
+        }
+        metadata = {}
+        for name, value in values.items():
+            if not isinstance(value, str) or value == "":
+                option = name.replace("_", "-")
+                raise ValueError(f"--write requires --{option}")
+            metadata[name] = value
+        metadata["invocation"] = recorded_invocation()
+    metadata["input_commit"] = require_candidate_commit(metadata["input_commit"])
+    return metadata
 
 
 def main() -> int:
     arguments = parser().parse_args()
+    if not arguments.check and not arguments.write:
+        payload, unused_run = transcript()
+        print(payload, end="")
+        return 0
+    try:
+        metadata = manifest_metadata(arguments)
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
     payload, run = transcript()
     svg = render_svg(payload)
+    manifest = demo_manifest(run, metadata)
     if arguments.check:
         if TRANSCRIPT_PATH.read_text(encoding="utf-8") != payload:
             print("demo transcript is stale", file=sys.stderr)
@@ -384,12 +467,9 @@ def main() -> int:
         if DEMO_PATH.read_text(encoding="utf-8") != svg:
             print("demo SVG is stale", file=sys.stderr)
             return 1
-        if MANIFEST_PATH.read_text(encoding="utf-8") != demo_manifest(run):
+        if MANIFEST_PATH.read_text(encoding="utf-8") != manifest:
             print("demo manifest is stale", file=sys.stderr)
             return 1
-        return 0
-    if not arguments.write:
-        print(payload, end="")
         return 0
     TRANSCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
     DEMO_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -404,7 +484,7 @@ def main() -> int:
         newline="\n",
     )
     MANIFEST_PATH.write_text(
-        demo_manifest(run),
+        manifest,
         encoding="utf-8",
         newline="\n",
     )

@@ -4,6 +4,7 @@ import html
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -486,15 +487,43 @@ class LaunchSurfaceTest(unittest.TestCase):
             (ROOT / "evidence" / "demo-manifest.json").read_text(encoding="utf-8")
         )
         run = manifest["run"]
-        self.assertEqual("generate_demo.py", run["agent"])
-        self.assertEqual("1.0.0", run["agent_version"])
+        self.assertNotEqual("generate_demo.py", run["agent"])
+        self.assertNotEqual("", run["agent"])
+        self.assertNotEqual("", run["agent_version"])
         self.assertEqual("2026-08-02", run["date"])
         self.assertFalse(run["edited"])
-        self.assertEqual("./scripts/demo.sh", run["invocation"])
         self.assertRegex(run["input_commit"], r"^[0-9a-f]{40}$")
-        self.assertRegex(run["lint_commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(run["fixture_consumer_commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(run["fixture_lint_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(run["output_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(run["protocol_sha256"], r"^[0-9a-f]{64}$")
+        invocation = shlex.split(run["invocation"])
+        self.assertEqual(
+            run["agent"],
+            invocation[invocation.index("--agent") + 1],
+        )
+        self.assertEqual(
+            run["agent_version"],
+            invocation[invocation.index("--agent-version") + 1],
+        )
+        self.assertEqual(
+            run["input_commit"],
+            invocation[invocation.index("--input-commit") + 1],
+        )
+        self.assertEqual(
+            0,
+            subprocess.run(
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    run["input_commit"],
+                    "HEAD",
+                ],
+                cwd=ROOT,
+                check=False,
+            ).returncode,
+        )
         self.assertEqual(
             manifest["output"]["sha256"],
             run["output_sha256"],
@@ -528,6 +557,29 @@ class LaunchSurfaceTest(unittest.TestCase):
             )
 
         self.assertEqual(0, completed.returncode)
+
+    def test_demo_write_requires_invocation_identity_and_candidate_commit(
+        self,
+    ) -> None:
+        manifest_before = (ROOT / "evidence" / "demo-manifest.json").read_bytes()
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "generate_demo.py"),
+                "--write",
+            ],
+            cwd=ROOT,
+            check=False,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("--write requires --agent", completed.stderr)
+        self.assertEqual(
+            manifest_before,
+            (ROOT / "evidence" / "demo-manifest.json").read_bytes(),
+        )
 
     def test_comparison_metric_and_article_are_present(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

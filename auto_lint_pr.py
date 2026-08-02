@@ -166,7 +166,6 @@ def parser() -> argparse.ArgumentParser:
     )
     argument_parser.add_argument(
         "--state",
-        default=".git/auto-lint-pr-state.json",
     )
     argument_parser.add_argument("--verification")
     argument_parser.add_argument("--restore", action="store_true")
@@ -1123,12 +1122,43 @@ def repository_root(
     return repository
 
 
+def transaction_state_path(
+    arguments: argparse.Namespace,
+    repository: Path | None = None,
+) -> Path:
+    """Resolve the transaction state beneath the selected checkout by default."""
+
+    if arguments.state is not None:
+        return Path(arguments.state).resolve()
+    if repository is None:
+        cwd_value = "."
+        if arguments.cwd is not None:
+            cwd_value = arguments.cwd
+        workspace_root = None
+        if arguments.workspace_root is not None:
+            workspace_root = Path(arguments.workspace_root)
+        repository = repository_root(Path(cwd_value).resolve(), workspace_root)
+    isolated = consumer_git_environment(os.environ)
+    completed = git(
+        repository,
+        "rev-parse",
+        "--git-path",
+        "auto-lint-pr-state.json",
+        environment=isolated,
+    )
+    path = Path(completed.stdout.strip())
+    if not path.is_absolute():
+        path = repository / path
+    return path.resolve()
+
+
 def changed_paths(repository: Path) -> list[str]:
     isolated = consumer_git_environment(os.environ)
     reject_consumer_executable_git_config(repository, isolated)
     tracked = git(
         repository,
         "diff",
+        "--no-renames",
         "--name-only",
         "-z",
         "HEAD",
@@ -1524,7 +1554,7 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         "repository": arguments.repository,
         "schema": 2,
     }
-    write_canonical(Path(arguments.state).resolve(), state)
+    write_canonical(transaction_state_path(arguments, repository), state)
     write_action_output("changed", str(bool(records)).lower())
     write_action_output("base-head", base_head)
     write_action_output("branch", state["branch"])
@@ -1677,7 +1707,7 @@ def run_verify(arguments: argparse.Namespace) -> dict[str, Any]:
     """Restore and attest a cross-job delta before any write token is injected."""
 
     refuse_pull_request_target(os.environ)
-    state_path = Path(arguments.state).resolve()
+    state_path = transaction_state_path(arguments)
     state = transaction_state(state_path)
     validate_transaction_binding(arguments, state)
     repository = transaction_repository(arguments, state)
@@ -2282,9 +2312,9 @@ def create_remote_branch(
             environment,
         )
     except AutoLintError as error:
-        if remote_tip(repository_name, branch, environment) == base:
-            return
-        raise error
+        raise SafetyError(
+            "branch creation outcome is ambiguous; no commit attempted"
+        ) from error
 
 
 def create_signed_commit(
@@ -2399,7 +2429,7 @@ def apply_labels_and_reviewers(
 
 def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
     refuse_pull_request_target(os.environ)
-    state_path = Path(arguments.state).resolve()
+    state_path = transaction_state_path(arguments)
     state = transaction_state(state_path)
     validate_transaction_binding(arguments, state)
     repository = transaction_repository(arguments, state)
@@ -2458,7 +2488,7 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
     expected_head = state["base_head"]
     if tip is not None:
         if tip == state["base_head"] and pull_request is None:
-            expected_head = tip
+            raise SafetyError("existing auto-lint branch has no ownership proof")
         else:
             branch_commits(
                 repository_name,
