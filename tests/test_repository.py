@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -525,6 +527,10 @@ class LaunchSurfaceTest(unittest.TestCase):
             ).returncode,
         )
         self.assertEqual(
+            run_git(ROOT, "rev-parse", "HEAD^"),
+            run["input_commit"],
+        )
+        self.assertEqual(
             manifest["output"]["sha256"],
             run["output_sha256"],
         )
@@ -580,6 +586,89 @@ class LaunchSurfaceTest(unittest.TestCase):
             manifest_before,
             (ROOT / "evidence" / "demo-manifest.json").read_bytes(),
         )
+
+    def test_demo_write_hashes_new_artifacts_and_then_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "candidate"
+            shutil.copytree(
+                ROOT,
+                candidate,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            run_git(candidate, "init", "-q", "-b", "main", "--object-format=sha1")
+            run_git(candidate, "config", "user.name", "Evidence Test")
+            run_git(
+                candidate,
+                "config",
+                "user.email",
+                "evidence@example.invalid",
+            )
+            run_git(candidate, "config", "commit.gpgSign", "false")
+            run_git(candidate, "add", "-A")
+            run_git(candidate, "commit", "-qm", "candidate")
+            input_commit = run_git(candidate, "rev-parse", "HEAD")
+            transcript = candidate / "evidence" / "demo-transcript.txt"
+            demo = candidate / "assets" / "demo.svg"
+            transcript.write_text(
+                "stale transcript\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            demo.write_text(
+                "<svg><text>stale demo</text></svg>\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            write = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/generate_demo.py",
+                    "--write",
+                    "--input-commit",
+                    input_commit,
+                    "--agent",
+                    "Evidence Test",
+                    "--agent-version",
+                    "1",
+                ],
+                cwd=candidate,
+                check=False,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertEqual(0, write.returncode, write.stderr)
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/generate_demo.py",
+                    "--check",
+                ],
+                cwd=candidate,
+                check=False,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(0, checked.returncode, checked.stderr)
+            manifest = json.loads(
+                (candidate / "evidence" / "demo-manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            transcript_sha256 = hashlib.sha256(transcript.read_bytes()).hexdigest()
+            demo_sha256 = hashlib.sha256(demo.read_bytes()).hexdigest()
+            self.assertEqual(
+                transcript_sha256,
+                manifest["output"]["sha256"],
+            )
+            self.assertEqual(
+                transcript_sha256,
+                manifest["run"]["output_sha256"],
+            )
+            self.assertEqual(
+                demo_sha256,
+                manifest["demo"]["sha256"],
+            )
 
     def test_comparison_metric_and_article_are_present(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

@@ -9,6 +9,7 @@ import html
 import json
 import os
 import re
+import shlex
 import struct
 import subprocess
 import sys
@@ -571,22 +572,81 @@ def verify_demo() -> None:
     run = value.get("run")
     if not isinstance(run, dict):
         raise ValueError("demo manifest has no run provenance")
-    expected_run = {
-        "agent": "generate_demo.py",
-        "agent_version": "1.0.0",
-        "date": "2026-08-02",
-        "edited": False,
-        "input_commit": run.get("input_commit"),
-        "invocation": "./scripts/demo.sh",
-        "lint_commit": run.get("lint_commit"),
-        "output_sha256": value["output"]["sha256"],
-        "protocol_sha256": value["skill"]["sha256"],
+    expected_fields = {
+        "agent",
+        "agent_version",
+        "date",
+        "edited",
+        "fixture_consumer_commit",
+        "fixture_lint_commit",
+        "input_commit",
+        "invocation",
+        "output_sha256",
+        "protocol_sha256",
     }
-    if run != expected_run:
+    if set(run) != expected_fields:
         raise ValueError("demo run provenance is incomplete or inconsistent")
-    for key in ("input_commit", "lint_commit"):
+    for key in (
+        "agent",
+        "agent_version",
+        "invocation",
+    ):
+        if not isinstance(run[key], str) or run[key] == "":
+            raise ValueError(f"demo run value is invalid: {key}")
+    if run["agent"] == "generate_demo.py":
+        raise ValueError("demo run agent identifies the generator")
+    if run["date"] != "2026-08-02":
+        raise ValueError("demo run date is invalid")
+    if run["edited"] is not False:
+        raise ValueError("demo run edited flag is invalid")
+    for key in (
+        "fixture_consumer_commit",
+        "fixture_lint_commit",
+        "input_commit",
+    ):
+        if not isinstance(run[key], str):
+            raise ValueError(f"demo run commit is invalid: {key}")
         if re.fullmatch(r"[0-9a-f]{40}", run[key]) is None:
             raise ValueError(f"demo run commit is invalid: {key}")
+    invocation = shlex.split(run["invocation"])
+    for option, key in (
+        ("--agent", "agent"),
+        ("--agent-version", "agent_version"),
+        ("--input-commit", "input_commit"),
+    ):
+        try:
+            recorded = invocation[invocation.index(option) + 1]
+        except (IndexError, ValueError) as error:
+            raise ValueError(f"demo invocation is missing: {option}") from error
+        if recorded != run[key]:
+            raise ValueError(f"demo invocation disagrees with: {option}")
+    evidence_commit = subprocess.run(
+        [
+            "git",
+            "log",
+            "-1",
+            "--format=%H",
+            "--",
+            str(path.relative_to(ROOT)),
+        ],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    expected_input_commit = subprocess.run(
+        ["git", "rev-parse", f"{evidence_commit}^"],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    if run["input_commit"] != expected_input_commit:
+        raise ValueError("demo input commit is not the evidence predecessor")
+    if run["output_sha256"] != value["output"]["sha256"]:
+        raise ValueError("demo output checksum provenance is inconsistent")
+    if run["protocol_sha256"] != value["skill"]["sha256"]:
+        raise ValueError("demo protocol checksum provenance is inconsistent")
 
     preview = ROOT / value["social_preview"]["path"]
     payload = preview.read_bytes()

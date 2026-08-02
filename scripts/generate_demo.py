@@ -340,18 +340,34 @@ def artifact_record(relative: str) -> dict[str, str]:
     }
 
 
+def rendered_artifact_record(relative: str, payload: str) -> dict[str, str]:
+    """Return one path and checksum record for newly rendered text."""
+
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return {
+        "path": relative,
+        "sha256": digest,
+    }
+
+
 def demo_manifest(
     run: dict[str, str],
     metadata: dict[str, str],
+    transcript_payload: str,
+    demo_payload: str,
 ) -> str:
     """Derive the evidence manifest from the artifacts that own each fact."""
 
+    output = rendered_artifact_record(
+        "evidence/demo-transcript.txt",
+        transcript_payload,
+    )
     value = {
-        "demo": artifact_record("assets/demo.svg"),
+        "demo": rendered_artifact_record("assets/demo.svg", demo_payload),
         "generator": artifact_record("scripts/generate_demo.py"),
         "implementation": artifact_record("auto_lint_pr.py"),
         "invocation": artifact_record("scripts/demo.sh"),
-        "output": artifact_record("evidence/demo-transcript.txt"),
+        "output": output,
         "poster": artifact_record("assets/poster.svg"),
         "run": {
             "agent": metadata["agent"],
@@ -362,7 +378,7 @@ def demo_manifest(
             "fixture_lint_commit": run["fixture_lint_commit"],
             "input_commit": metadata["input_commit"],
             "invocation": metadata["invocation"],
-            "output_sha256": sha256(TRANSCRIPT_PATH),
+            "output_sha256": output["sha256"],
             "protocol_sha256": sha256(ROOT / "skills" / "auto-lint-pr" / "SKILL.md"),
         },
         "schema": 1,
@@ -459,7 +475,7 @@ def main() -> int:
         return 2
     payload, run = transcript()
     svg = render_svg(payload)
-    manifest = demo_manifest(run, metadata)
+    manifest = demo_manifest(run, metadata, payload, svg)
     if arguments.check:
         if TRANSCRIPT_PATH.read_text(encoding="utf-8") != payload:
             print("demo transcript is stale", file=sys.stderr)

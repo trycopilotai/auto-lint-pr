@@ -1273,6 +1273,118 @@ class TransactionTest(unittest.TestCase):
             AUTO_LINT_PR.restore_prepared_delta(verification, records)
             AUTO_LINT_PR.assert_delta(verification, records)
 
+    def test_prepare_then_fresh_verify_restores_a_staged_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lint_root = root / "lint"
+            manifest = write_lint_fixture(lint_root)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            (consumer / "sample.txt").write_text(
+                "formatted\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            (consumer / "source.txt").write_text(
+                "content\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            commit_all(consumer)
+            hook = root / "rename_hook.py"
+            hook.write_text(
+                f"""\
+import subprocess
+
+subprocess.run(
+    [
+        {str(AUTO_LINT_PR.trusted_git())!r},
+        "mv",
+        "source.txt",
+        "destination.txt",
+    ],
+    check=True,
+)
+""",
+                encoding="utf-8",
+                newline="\n",
+            )
+            hook_command = " ".join(
+                [
+                    shlex.quote(sys.executable),
+                    shlex.quote(str(hook)),
+                ]
+            )
+            state_path = root / "state.json"
+            prepare = prepare_arguments(
+                consumer,
+                lint_root,
+                manifest,
+                state_path,
+                ["--hook", hook_command],
+            )
+
+            state = AUTO_LINT_PR.run_prepare(prepare)
+            prepared_diff = run_git(
+                consumer,
+                "diff",
+                "--no-renames",
+                "--binary",
+                "HEAD",
+            )
+            self.assertEqual(
+                [
+                    ("destination.txt", "file"),
+                    ("source.txt", "deleted"),
+                ],
+                [(record["path"], record["kind"]) for record in state["delta"]],
+            )
+            verification = root / "verification"
+            subprocess.run(
+                ["git", "clone", "-q", str(consumer), str(verification)],
+                check=True,
+            )
+            receipt_path = root / "verified.json"
+            verify = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "verify",
+                    "--cwd",
+                    str(verification),
+                    "--state",
+                    str(state_path),
+                    "--verification",
+                    str(receipt_path),
+                    "--restore",
+                ]
+            )
+
+            receipt = AUTO_LINT_PR.run_verify(verify)
+
+            self.assertEqual(
+                state["delta"],
+                AUTO_LINT_PR.delta_records(verification),
+            )
+            run_git(verification, "add", "-A")
+            self.assertEqual(
+                prepared_diff,
+                run_git(
+                    verification,
+                    "diff",
+                    "--no-renames",
+                    "--binary",
+                    "HEAD",
+                ),
+            )
+            self.assertFalse((verification / "source.txt").exists())
+            self.assertEqual(
+                "content\n",
+                (verification / "destination.txt").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                AUTO_LINT_PR.canonical_sha256(state["delta"]),
+                receipt["delta_sha256"],
+            )
+
     def test_default_state_path_is_beneath_selected_cwd_repository(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1292,6 +1404,54 @@ class TransactionTest(unittest.TestCase):
 
             self.assertEqual(
                 (repository / ".git" / "auto-lint-pr-state.json").resolve(),
+                state_path,
+            )
+
+    def test_default_state_path_uses_linked_worktree_git_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary = root / "primary"
+            initialize_repository(primary)
+            (primary / "tracked.txt").write_text(
+                "tracked\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            commit_all(primary)
+            linked = root / "linked"
+            run_git(
+                primary,
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                str(linked),
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                ["prepare", "--cwd", str(linked)]
+            )
+            outside = root / "outside"
+            outside.mkdir()
+            previous = Path.cwd()
+            try:
+                os.chdir(outside)
+                state_path = AUTO_LINT_PR.transaction_state_path(arguments)
+            finally:
+                os.chdir(previous)
+            git_path = Path(
+                run_git(
+                    linked,
+                    "rev-parse",
+                    "--git-path",
+                    "auto-lint-pr-state.json",
+                )
+            )
+            if not git_path.is_absolute():
+                git_path = linked / git_path
+
+            self.assertEqual(git_path.resolve(), state_path)
+            self.assertNotEqual(
+                (primary / ".git" / "auto-lint-pr-state.json").resolve(),
                 state_path,
             )
 
