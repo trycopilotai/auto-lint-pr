@@ -308,13 +308,15 @@ def verify_launch_surface() -> None:
     if 'src="assets/icon.svg"' not in readme:
         raise ValueError("README does not display the project icon")
     for workflow in (
-        "auto-lint-pr.yml",
         "ci.yml",
         "release.yml",
     ):
         badge = f"actions/workflows/{workflow}/badge.svg"
         if readme.count(badge) != 1:
             raise ValueError(f"README badge count is wrong: {workflow}")
+    reusable_badge = "actions/workflows/auto-lint-pr.yml/badge.svg"
+    if reusable_badge in readme:
+        raise ValueError("README badges a reusable-only workflow")
     for required in (
         "assets/demo.svg",
         "assets/poster.svg",

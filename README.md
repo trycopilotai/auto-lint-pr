@@ -2,7 +2,6 @@
 
 # auto-lint-pr
 
-[![Auto lint PR](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/auto-lint-pr.yml/badge.svg)](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/auto-lint-pr.yml)
 [![CI](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/ci.yml/badge.svg)](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/ci.yml)
 [![Release](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/release.yml/badge.svg)](https://github.com/trycopilotai/auto-lint-pr/actions/workflows/release.yml)
 
