@@ -13,7 +13,7 @@
   },
   "invocation": {
     "path": "scripts/demo.sh",
-    "sha256": "1a829a627813b7491480e6cc0b58218d0ea2285808210b21415f9fd7ff8287e9"
+    "sha256": "1a745ed172aaa02ef2f42c1ead762380da10b5aee5f056c956f67b579f10d070"
   },
   "output": {
     "path": "evidence/demo-transcript.txt",
