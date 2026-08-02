@@ -32,12 +32,12 @@
     "invocation": "./scripts/demo.sh",
     "lint_commit": "9f8581ee6e90a114962e7d743e80235de126bd90",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
-    "protocol_sha256": "3b42928eb000a04d8bdf7c79f48422a5b8b8e05aa93bafd9a0e56b9dd9c93d01"
+    "protocol_sha256": "609a5e6b8514a03f19eac7ed589042d193474b656ad847367c5b0bce645ab49e"
   },
   "schema": 1,
   "skill": {
     "path": "skills/auto-lint-pr/SKILL.md",
-    "sha256": "3b42928eb000a04d8bdf7c79f48422a5b8b8e05aa93bafd9a0e56b9dd9c93d01"
+    "sha256": "609a5e6b8514a03f19eac7ed589042d193474b656ad847367c5b0bce645ab49e"
   },
   "social_preview": {
     "path": "assets/social-preview.png",
