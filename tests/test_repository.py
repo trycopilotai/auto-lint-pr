@@ -16,6 +16,17 @@ sys.path.insert(0, str(ROOT))
 from tools import verify_repo  # noqa: E402
 
 
+def run_git(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
 class ActionMetadataTest(unittest.TestCase):
     def test_token_is_only_in_publish_step(self) -> None:
         text = (ROOT / "action.yml").read_text(encoding="utf-8")
@@ -98,6 +109,11 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("phase: verify", verify)
         self.assertIn("consumer-base.bundle", verify)
         self.assertIn("auto-lint-pr.tar.gz", verify)
+        consumer_checkout = verify.split(
+            "- name: Check out exact consumer base",
+            maxsplit=1,
+        )[1].split("- name: Check out this action revision", maxsplit=1,)[0]
+        self.assertIn("fetch-depth: 0", consumer_checkout)
         self.assertNotIn("actions/checkout@", publish)
         self.assertNotIn("secrets.checkout_token", publish)
         self.assertIn("auto-lint-pr-publication", publish)
@@ -110,6 +126,75 @@ class WorkflowMetadataTest(unittest.TestCase):
             "verification-sha",
         ):
             self.assertIn(output, publish)
+
+    def test_consumer_base_bundle_is_complete_and_restorable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            run_git(source, "init", "-q", "-b", "main")
+            run_git(source, "config", "user.name", "Fixture Author")
+            run_git(
+                source,
+                "config",
+                "user.email",
+                "fixture@example.invalid",
+            )
+            (source / "first.txt").write_text(
+                "first\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            run_git(source, "add", "first.txt")
+            run_git(source, "commit", "-qm", "first")
+            (source / "second.txt").write_text(
+                "second\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            run_git(source, "add", "second.txt")
+            run_git(source, "commit", "-qm", "second")
+            base = run_git(source, "rev-parse", "HEAD")
+            parent = run_git(source, "rev-parse", "HEAD^")
+
+            workspace = root / "workspace"
+            subprocess.run(
+                ["git", "clone", "-q", str(source), str(workspace)],
+                check=True,
+            )
+            run_git(
+                workspace,
+                "update-ref",
+                "refs/auto-lint-pr/base",
+                base,
+            )
+            bundle = root / "consumer-base.bundle"
+            run_git(
+                workspace,
+                "bundle",
+                "create",
+                str(bundle),
+                "refs/auto-lint-pr/base",
+            )
+
+            restored = root / "restored"
+            restored.mkdir()
+            run_git(restored, "init", "-q")
+            run_git(
+                restored,
+                "fetch",
+                "-q",
+                str(bundle),
+                "refs/auto-lint-pr/base",
+            )
+
+            self.assertEqual(base, run_git(restored, "rev-parse", "FETCH_HEAD"))
+            run_git(restored, "cat-file", "-e", f"{parent}^{{commit}}")
+
+    def test_checksum_bound_files_checkout_with_lf(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+        self.assertEqual("* text=auto eol=lf\n", attributes)
 
     def test_readme_requires_caller_write_permissions(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")

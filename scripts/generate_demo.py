@@ -145,9 +145,14 @@ for name in (
 
 arguments = sys.argv[1:]
 cwd = Path(arguments[arguments.index("--cwd") + 1])
-(cwd / "sample.txt").write_text("formatted\\n", encoding="utf-8")
+(cwd / "sample.txt").write_text(
+    "formatted\\n",
+    encoding="utf-8",
+    newline="\\n",
+)
 """,
             encoding="utf-8",
+            newline="\n",
         )
         lint_commit = commit_all(lint_root)
         manifest = root / "manifest.json"
@@ -166,6 +171,7 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
                 }
             ),
             encoding="utf-8",
+            newline="\n",
         )
 
         consumer = root / "consumer"
@@ -173,6 +179,7 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
         (consumer / "sample.txt").write_text(
             "needs-formatting\n",
             encoding="utf-8",
+            newline="\n",
         )
         consumer_commit = commit_all(consumer)
         state_path = root / "state.json"
@@ -357,9 +364,21 @@ def main() -> int:
         return 0
     TRANSCRIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
     DEMO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TRANSCRIPT_PATH.write_text(payload, encoding="utf-8")
-    DEMO_PATH.write_text(svg, encoding="utf-8")
-    MANIFEST_PATH.write_text(demo_manifest(run), encoding="utf-8")
+    TRANSCRIPT_PATH.write_text(
+        payload,
+        encoding="utf-8",
+        newline="\n",
+    )
+    DEMO_PATH.write_text(
+        svg,
+        encoding="utf-8",
+        newline="\n",
+    )
+    MANIFEST_PATH.write_text(
+        demo_manifest(run),
+        encoding="utf-8",
+        newline="\n",
+    )
     return 0
 
 

@@ -5,7 +5,7 @@
   },
   "generator": {
     "path": "scripts/generate_demo.py",
-    "sha256": "b1f4ac3ba2681a3addbc7b8c83c5171cf895d20238d0ff4f9dae18f3e0b6269d"
+    "sha256": "c066cff8786efd2ccba699df73b1baac638fadfbc6c94dd4e77c43c8664dfeac"
   },
   "implementation": {
     "path": "auto_lint_pr.py",
@@ -30,7 +30,7 @@
     "edited": false,
     "input_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "invocation": "./scripts/demo.sh",
-    "lint_commit": "9f8581ee6e90a114962e7d743e80235de126bd90",
+    "lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
     "protocol_sha256": "609a5e6b8514a03f19eac7ed589042d193474b656ad847367c5b0bce645ab49e"
   },

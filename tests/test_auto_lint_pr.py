@@ -79,6 +79,7 @@ def write_lint_fixture(root: Path) -> Path:
     (root / ".gitignore").write_text(
         "sitecustomize.py\n",
         encoding="utf-8",
+        newline="\n",
     )
     script = root / "lint.py"
     script.write_text(
@@ -103,9 +104,10 @@ arguments = sys.argv[1:]
 cwd = Path(arguments[arguments.index("--cwd") + 1])
 path = cwd / "sample.txt"
 if path.read_text(encoding="utf-8") == "needs-formatting\\n":
-    path.write_text("formatted\\n", encoding="utf-8")
+    path.write_text("formatted\\n", encoding="utf-8", newline="\\n")
 """,
         encoding="utf-8",
+        newline="\n",
     )
     commit = commit_all(root)
     manifest = {
@@ -123,6 +125,7 @@ if path.read_text(encoding="utf-8") == "needs-formatting\\n":
     manifest_path.write_text(
         json.dumps(manifest),
         encoding="utf-8",
+        newline="\n",
     )
     return manifest_path
 
@@ -184,6 +187,7 @@ class CommandTest(unittest.TestCase):
             manifest_path.write_text(
                 json.dumps(manifest),
                 encoding="utf-8",
+                newline="\n",
             )
 
             actual = AUTO_LINT_PR.verify_lint_release(
@@ -581,7 +585,7 @@ class TransactionTest(unittest.TestCase):
             consumer = root / "consumer"
             initialize_repository(consumer)
             sample = consumer / "sample.txt"
-            sample.write_text("needs-formatting\n", encoding="utf-8")
+            sample.write_text("needs-formatting\n", encoding="utf-8", newline="\n")
             commit_all(consumer)
             state = root / "state.json"
             arguments = prepare_arguments(
@@ -620,6 +624,7 @@ class TransactionTest(unittest.TestCase):
             (consumer / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             commit_all(consumer)
             state = root / "state.json"
@@ -643,12 +648,14 @@ class TransactionTest(unittest.TestCase):
             (lint_root / "lint.py").write_text(
                 "raise SystemExit(0)\n",
                 encoding="utf-8",
+                newline="\n",
             )
             consumer = root / "consumer"
             initialize_repository(consumer)
             (consumer / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             commit_all(consumer)
             arguments = prepare_arguments(
@@ -669,12 +676,14 @@ class TransactionTest(unittest.TestCase):
             (lint_root / "sitecustomize.py").write_text(
                 "raise SystemExit(93)\n",
                 encoding="utf-8",
+                newline="\n",
             )
             consumer = root / "consumer"
             initialize_repository(consumer)
             (consumer / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             commit_all(consumer)
             arguments = prepare_arguments(
@@ -697,6 +706,7 @@ class TransactionTest(unittest.TestCase):
             (consumer / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             commit_all(consumer)
             hook = root / "hook.py"
@@ -719,9 +729,10 @@ for name in (
     if os.environ.get(name):
         raise SystemExit(92)
 
-Path("generated.txt").write_text("generated\\n", encoding="utf-8")
+Path("generated.txt").write_text("generated\\n", encoding="utf-8", newline="\\n")
 """,
                 encoding="utf-8",
+                newline="\n",
             )
             hook_command = " ".join(
                 [
@@ -766,6 +777,7 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
             (consumer / "sample.txt").write_text(
                 "needs-formatting\n",
                 encoding="utf-8",
+                newline="\n",
             )
             commit_all(consumer)
             hook = root / "hook.py"
@@ -774,11 +786,12 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8")
 import subprocess
 from pathlib import Path
 
-Path("hidden.txt").write_text("hidden\\n", encoding="utf-8")
+Path("hidden.txt").write_text("hidden\\n", encoding="utf-8", newline="\\n")
 subprocess.run(["git", "add", "hidden.txt"], check=True)
 subprocess.run(["git", "commit", "-m", "hidden"], check=True)
 """,
                 encoding="utf-8",
+                newline="\n",
             )
             hook_command = " ".join(
                 [
@@ -806,9 +819,9 @@ subprocess.run(["git", "commit", "-m", "hidden"], check=True)
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             commit_all(repository)
-            sample.write_text("prepared\n", encoding="utf-8")
+            sample.write_text("prepared\n", encoding="utf-8", newline="\n")
             expected = AUTO_LINT_PR.delta_records(repository)
 
             sample.chmod(0o755)
@@ -853,7 +866,7 @@ subprocess.run(["git", "commit", "-m", "hidden"], check=True)
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             sample.chmod(0o755)
             commit_all(repository)
             sample.unlink()
@@ -868,13 +881,13 @@ subprocess.run(["git", "commit", "-m", "hidden"], check=True)
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             commit_all(repository)
-            sample.write_text("prepared\n", encoding="utf-8")
+            sample.write_text("prepared\n", encoding="utf-8", newline="\n")
             expected = AUTO_LINT_PR.delta_records(repository)
 
             AUTO_LINT_PR.assert_delta(repository, expected)
-            sample.write_text("changed-after-check\n", encoding="utf-8")
+            sample.write_text("changed-after-check\n", encoding="utf-8", newline="\n")
             changes = AUTO_LINT_PR.publication_file_changes(expected)
 
             encoded = changes["additions"][0]["contents"]
@@ -898,17 +911,20 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(
     os.environ.get("GH_TOKEN", "ABSENT"),
     encoding="utf-8",
+    newline="\\n",
 )
 sys.stdout.buffer.write(sys.stdin.buffer.read())
 """,
                 encoding="utf-8",
+                newline="\n",
             )
             (repository / ".gitattributes").write_text(
                 "sample.txt filter=probe\n",
                 encoding="utf-8",
+                newline="\n",
             )
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             commit_all(repository)
             filter_command = " ".join(
                 [
@@ -929,7 +945,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 "filter.probe.required",
                 "true",
             )
-            sample.write_text("prepared\n", encoding="utf-8")
+            sample.write_text("prepared\n", encoding="utf-8", newline="\n")
             expected = AUTO_LINT_PR.delta_records(repository)
             self.assertEqual("ABSENT", capture.read_text(encoding="utf-8"))
             capture.unlink()
@@ -949,9 +965,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = root / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             records = AUTO_LINT_PR.delta_records(repository)
             run_git(repository, "restore", "sample.txt")
             state_path = root / "state.json"
@@ -966,7 +982,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 "repository": "owner/repository",
                 "schema": 1,
             }
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            state_path.write_text(json.dumps(state), encoding="utf-8", newline="\n")
             verification = root / "verified.json"
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
@@ -999,6 +1015,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             (repository / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             head = commit_all(repository)
             state_path = root / "state.json"
@@ -1017,6 +1034,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
@@ -1063,9 +1081,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = root / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = root / "state.json"
             state = {
                 "base": "main",
@@ -1078,7 +1096,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 "repository": "owner/repository",
                 "schema": 1,
             }
-            state_path.write_text(json.dumps(state), encoding="utf-8")
+            state_path.write_text(json.dumps(state), encoding="utf-8", newline="\n")
             verification = root / "verified.json"
             verify_arguments = AUTO_LINT_PR.parser().parse_args(
                 [
@@ -1095,6 +1113,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             state_path.write_text(
                 state_path.read_text(encoding="utf-8") + "\n",
                 encoding="utf-8",
+                newline="\n",
             )
             publish_arguments = AUTO_LINT_PR.parser().parse_args(
                 [
@@ -1156,10 +1175,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             initialize_repository(repository)
             first = repository / "first.txt"
             second = repository / "second.txt"
-            first.write_text("before\n", encoding="utf-8")
-            second.write_text("unchanged\n", encoding="utf-8")
+            first.write_text("before\n", encoding="utf-8", newline="\n")
+            second.write_text("unchanged\n", encoding="utf-8", newline="\n")
             commit_all(repository)
-            first.write_text("after\n", encoding="utf-8")
+            first.write_text("after\n", encoding="utf-8", newline="\n")
 
             records = AUTO_LINT_PR.delta_records(repository)
             changes = AUTO_LINT_PR.publication_file_changes(records)
@@ -1261,6 +1280,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             (repository / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             head = commit_all(repository)
             state_path = Path(directory) / "state.json"
@@ -1279,6 +1299,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1303,6 +1324,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             (repository / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             head = commit_all(repository)
             state_path = Path(directory) / "state.json"
@@ -1321,6 +1343,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
@@ -1341,9 +1364,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             delta = AUTO_LINT_PR.delta_records(repository)
             state_path = Path(directory) / "state.json"
             state_path.write_text(
@@ -1361,6 +1384,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1440,6 +1464,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             (repository / "sample.txt").write_text(
                 "formatted\n",
                 encoding="utf-8",
+                newline="\n",
             )
             head = commit_all(repository)
             state_path = Path(directory) / "state.json"
@@ -1458,6 +1483,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
@@ -1482,9 +1508,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1501,6 +1527,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1575,9 +1602,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1594,6 +1621,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1660,9 +1688,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1679,6 +1707,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1751,9 +1780,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1770,6 +1799,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1828,9 +1858,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1847,6 +1877,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1907,9 +1938,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1926,6 +1957,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1981,9 +2013,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -2000,6 +2032,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -2073,9 +2106,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             delta = AUTO_LINT_PR.delta_records(repository)
             state_path = Path(directory) / "state.json"
             state_path.write_text(
@@ -2093,6 +2126,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
@@ -2166,9 +2200,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
             sample = repository / "sample.txt"
-            sample.write_text("before\n", encoding="utf-8")
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
             head = commit_all(repository)
-            sample.write_text("after\n", encoding="utf-8")
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
             state_path = Path(directory) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -2185,6 +2219,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     }
                 ),
                 encoding="utf-8",
+                newline="\n",
             )
             write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
