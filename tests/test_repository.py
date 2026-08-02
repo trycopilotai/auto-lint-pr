@@ -90,6 +90,15 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("--cwd fixtures/integration", text)
         self.assertIn("--language requirements", text)
         self.assertIn("--local", text)
+        self.assertIn(
+            "python3 ../verification-source/auto_lint_pr.py verify",
+            text,
+        )
+        self.assertIn("--restore", text)
+        self.assertIn("verification-source", text)
+        self.assertIn("auto-lint-pr-verified.json", text)
+        self.assertIn("state_sha256", text)
+        self.assertIn("token-free verification receipt", text)
         self.assertIn('GITHUB_TOKEN: ""', text)
         self.assertIn('GH_TOKEN: ""', text)
         self.assertIn(
