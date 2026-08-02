@@ -89,14 +89,27 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("needs: prepare", text)
         self.assertIn("actions/upload-artifact@", text)
         self.assertIn("actions/download-artifact@", text)
-        prepare, publish = text.split("\n  publish:\n", maxsplit=1)
+        prepare, remaining = text.split("\n  verify:\n", maxsplit=1)
+        verify, publish = remaining.split("\n  publish:\n", maxsplit=1)
         self.assertNotIn('token: "${{ github.token }}"', prepare)
+        self.assertNotIn('token: "${{ github.token }}"', verify)
         self.assertIn('token: "${{ github.token }}"', publish)
-        self.assertEqual(2, publish.count("actions/checkout@"))
-        self.assertEqual(
-            2,
-            publish.count("secrets.checkout_token || github.token"),
-        )
+        self.assertEqual(2, verify.count("actions/checkout@"))
+        self.assertIn("phase: verify", verify)
+        self.assertIn("consumer-base.bundle", verify)
+        self.assertIn("auto-lint-pr.tar.gz", verify)
+        self.assertNotIn("actions/checkout@", publish)
+        self.assertNotIn("secrets.checkout_token", publish)
+        self.assertIn("auto-lint-pr-publication", publish)
+        self.assertIn('GH_TOKEN: ""', publish)
+        self.assertIn('GITHUB_TOKEN: ""', publish)
+        for output in (
+            "action-archive-sha",
+            "consumer-bundle-sha",
+            "state-sha",
+            "verification-sha",
+        ):
+            self.assertIn(output, publish)
 
     def test_readme_requires_caller_write_permissions(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")

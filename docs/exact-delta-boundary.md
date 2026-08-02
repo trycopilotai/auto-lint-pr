@@ -5,13 +5,14 @@ formatter. It is proving that the process holding a
 repository write token publishes only the bytes the
 formatter produced.
 
-`auto-lint-pr` treats that proof as a transaction with two
-jobs. The first job prepares a delta without publication
-credentials. The second begins from fresh trusted checkouts.
-Its verifier subprocess clears token variables, restores the
-recorded delta, and verifies it before the following
-publication substep receives the job-scoped token as an
-explicit input.
+`auto-lint-pr` treats that proof as a three-job transaction.
+The first job prepares a delta without publication
+credentials. The second begins from fresh read-only
+checkouts, restores the recorded delta, verifies it, and
+packages its exact inputs with checksums. The write-scoped
+job reconstructs that package without a network checkout,
+reverifies it with token variables cleared, and only then
+passes the token to project publication code.
 
 This is a draft about that boundary. It is not a release
 announcement.
@@ -39,12 +40,12 @@ convention.
 
 ## Verify reconstructs the boundary
 
-The publish job does not reuse the formatter workspace. It
-starts from fresh action and consumer checkouts, downloads
-the state artifact, and runs the restore-and-verify phase in
-a subprocess whose GitHub token variables are cleared. The
-trusted checkout actions may use the job-scoped token, but
-do not persist it.
+The verification job does not reuse the formatter workspace.
+It starts from fresh action and consumer checkouts,
+downloads the state artifact, and runs restore-and-verify
+with read-only permissions. It packages the exact consumer
+base commit, pinned action source, state, and receipt with
+checksums exposed through the trusted job boundary.
 
 Verification binds the state record to the expected base
 checkout, recreates the regular-file delta, and writes a
@@ -53,10 +54,13 @@ refuses a stale base, a changed state file, a changed
 receipt, unsupported file kinds or modes, and residue
 outside the prepared paths.
 
-The workflow passes the job-scoped token explicitly only to
-the following composite action substep. That credentialed
-process consumes the already verified state and receipt. It
-does not rerun the formatter or the hook.
+The write-scoped job downloads that package, validates every
+checksum, and reconstructs the consumer base and action
+source without a network checkout. Its verifier subprocess
+clears GitHub token variables and creates a new path-bound
+receipt. The workflow passes the token explicitly only to
+the following project publication substep. That process does
+not rerun the formatter or the hook.
 
 ## Publish uses the verified bytes
 

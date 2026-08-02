@@ -11,10 +11,14 @@ later public launch operations.
 - Keep the GitHub Release in draft state.
 - Keep repository and package visibility private.
 - Confirm that no `latest` alias exists.
-- Confirm prepare and publish use separate jobs, with the
-  state artifact as their only formatter-controlled bridge.
-- Confirm the publish job restores and verifies the state
-  before its credentialed substep.
+- Confirm prepare, verify, and publish use separate
+  permission boundaries, with the state artifact as their
+  only formatter-controlled bridge.
+- Confirm the read-only verifier packages checksum-bound
+  publication inputs and the write-scoped job performs no
+  network checkout.
+- Confirm the write-scoped job validates and reverifies the
+  package before its credentialed project substep.
 - Confirm the target repository's Actions setting permits
   GitHub Actions to create pull requests.
 

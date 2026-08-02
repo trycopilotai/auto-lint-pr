@@ -5,8 +5,8 @@ description:
 inputs:
   phase:
     description:
-      "Transaction phase; prepare must run in a job without
-      write permissions, and publish in a fresh job"
+      "Transaction phase; prepare and verify must run
+      without write permissions, and publish in a fresh job"
     required: false
     default: "prepare"
   token:
@@ -97,10 +97,11 @@ runs:
     - name: Validate transaction phase
       if: >-
         inputs.phase != 'prepare' && inputs.phase !=
-        'publish'
+        'verify' && inputs.phase != 'publish'
       shell: bash
       run: |
-        printf '%s\n' "phase must be prepare or publish" >&2
+        printf '%s\n' \
+          "phase must be prepare, verify, or publish" >&2
         exit 2
     - name: Prepare token-free formatting delta
       id: prepare
@@ -129,7 +130,9 @@ runs:
         prepare
     - name: Restore and verify exact prepared delta
       id: verify
-      if: inputs.phase == 'publish'
+      if: >-
+        inputs.phase == 'verify' || inputs.phase ==
+        'publish'
       shell: bash
       env:
         GH_TOKEN: ""

@@ -145,21 +145,25 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  publish:
+  verify:
     needs: prepare
     if: needs.prepare.outputs.changed == 'true'
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
+      contents: read
     runs-on: ubuntu-latest
+    outputs:
+      action-archive-sha:
+        "${{ steps.package.outputs.action-archive-sha }}"
+      consumer-bundle-sha:
+        "${{ steps.package.outputs.consumer-bundle-sha }}"
+      state-sha: "${{ steps.package.outputs.state-sha }}"
+      verification-sha:
+        "${{ steps.package.outputs.verification-sha }}"
     steps:
       - name: Check out exact consumer base
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: "${{ needs.prepare.outputs.base-head }}"
-          token:
-            "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: workspace
       - name: Check out this action revision
@@ -175,16 +179,124 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: auto-lint-pr-state
-          path: "${{ runner.temp }}"
-      - name: Verify then publish in the fresh job
+          path: "${{ runner.temp }}/prepared"
+      - name: Verify in a fresh read-only job
+        uses: ./dependencies/auto-lint-pr
+        with:
+          phase: verify
+          state-path:
+            "${{ runner.temp
+            }}/prepared/auto-lint-state.json"
+          verification-path:
+            "${{ runner.temp }}/auto-lint-preverified.json"
+          cwd: "workspace/${{ inputs.cwd }}"
+          base: "${{ inputs.base }}"
+      - name: Package immutable publication inputs
+        id: package
+        shell: bash
+        env:
+          BASE_HEAD:
+            "${{ needs.prepare.outputs.base-head }}"
+        run: |
+          package="$RUNNER_TEMP/publication"
+          mkdir "$package"
+          cp \
+            "$RUNNER_TEMP/prepared/auto-lint-state.json" \
+            "$package/auto-lint-state.json"
+          cp \
+            "$RUNNER_TEMP/auto-lint-preverified.json" \
+            "$package/auto-lint-preverified.json"
+          git -C workspace update-ref \
+            refs/auto-lint-pr/base "$BASE_HEAD"
+          git -C workspace bundle create \
+            "$package/consumer-base.bundle" \
+            refs/auto-lint-pr/base
+          git -C workspace update-ref -d \
+            refs/auto-lint-pr/base
+          git -C dependencies/auto-lint-pr archive \
+            --format=tar \
+            --prefix=auto-lint-pr/ \
+            HEAD |
+            gzip -n >"$package/auto-lint-pr.tar.gz"
+          {
+            printf 'action-archive-sha=%s\n' \
+              "$(sha256sum "$package/auto-lint-pr.tar.gz" | cut -d' ' -f1)"
+            printf 'consumer-bundle-sha=%s\n' \
+              "$(sha256sum "$package/consumer-base.bundle" | cut -d' ' -f1)"
+            printf 'state-sha=%s\n' \
+              "$(sha256sum "$package/auto-lint-state.json" | cut -d' ' -f1)"
+            printf 'verification-sha=%s\n' \
+              "$(sha256sum "$package/auto-lint-preverified.json" | cut -d' ' -f1)"
+          } >>"$GITHUB_OUTPUT"
+      - name: Upload immutable publication inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: auto-lint-pr-publication
+          path: "${{ runner.temp }}/publication"
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs:
+      - prepare
+      - verify
+    if: needs.prepare.outputs.changed == 'true'
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download immutable publication inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: auto-lint-pr-publication
+          path: "${{ runner.temp }}/publication"
+      - name: Restore verified publication inputs
+        shell: bash
+        env:
+          ACTION_ARCHIVE_SHA:
+            "${{ needs.verify.outputs.action-archive-sha }}"
+          BASE_HEAD:
+            "${{ needs.prepare.outputs.base-head }}"
+          CONSUMER_BUNDLE_SHA:
+            "${{ needs.verify.outputs.consumer-bundle-sha }}"
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+          STATE_SHA: "${{ needs.verify.outputs.state-sha }}"
+          VERIFICATION_SHA:
+            "${{ needs.verify.outputs.verification-sha }}"
+        run: |
+          package="$RUNNER_TEMP/publication"
+          test "$(sha256sum "$package/auto-lint-pr.tar.gz" | cut -d' ' -f1)" = \
+            "$ACTION_ARCHIVE_SHA"
+          test "$(sha256sum "$package/consumer-base.bundle" | cut -d' ' -f1)" = \
+            "$CONSUMER_BUNDLE_SHA"
+          test "$(sha256sum "$package/auto-lint-state.json" | cut -d' ' -f1)" = \
+            "$STATE_SHA"
+          test "$(sha256sum "$package/auto-lint-preverified.json" | cut -d' ' -f1)" = \
+            "$VERIFICATION_SHA"
+          mkdir -p dependencies workspace
+          tar -xzf "$package/auto-lint-pr.tar.gz" \
+            -C dependencies
+          git -C workspace init -q
+          git -C workspace fetch -q \
+            "$package/consumer-base.bundle" \
+            refs/auto-lint-pr/base
+          git -C workspace checkout -q --detach FETCH_HEAD
+          test "$(git -C workspace rev-parse HEAD)" = \
+            "$BASE_HEAD"
+      - name: Reverify then publish the exact delta
         uses: ./dependencies/auto-lint-pr
         with:
           phase: publish
           token: "${{ github.token }}"
           state-path:
-            "${{ runner.temp }}/auto-lint-state.json"
+            "${{ runner.temp
+            }}/publication/auto-lint-state.json"
           verification-path:
-            "${{ runner.temp }}/auto-lint-verified.json"
+            "${{ runner.temp
+            }}/auto-lint-final-verified.json"
           cwd: "workspace/${{ inputs.cwd }}"
           base: "${{ inputs.base }}"
           labels: "${{ inputs.labels }}"

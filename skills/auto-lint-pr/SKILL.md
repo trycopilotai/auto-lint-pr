@@ -32,13 +32,14 @@ Do not move private checks into the public lint dependency.
 Keep the formatter and optional hook in the prepare phase.
 They must not receive `GITHUB_TOKEN`, `GH_TOKEN`, or Actions
 runtime credentials or runner command-file paths. Run
-prepare in a read-only job. Run publish in a fresh job with
-fresh checkouts after transferring only the prepared state
-artifact. Its first subprocess clears token variables,
-restores, and verifies the exact delta; its next substep may
-receive the write token explicitly. Trusted checkout actions
-in the publish job may use that job-scoped token, but must
-not persist it.
+prepare in a read-only job. Use a second read-only job with
+fresh checkouts to restore and verify the prepared state,
+then package its exact base commit, action source, state,
+and receipt with checksums. In the write-scoped job,
+validate the package, reconstruct its inputs without a
+network checkout, and reverify with token variables cleared.
+Only the next project substep may receive the write token
+explicitly.
 
 Use a local checkout of the composite action when direct
 cross-repository workflow references are not approved. Check
@@ -82,10 +83,10 @@ composite action; publication must use the consumer
 repository's `github.token` so the resulting commit is
 authored by `github-actions[bot]`.
 
-Do not place the prepare and publish phases in one job. Do
-not replace the cross-job state artifact with `GITHUB_ENV`,
-`GITHUB_PATH`, a workspace action checkout, or another
-formatter-writable channel.
+Do not combine the prepare, verify, and publish permission
+boundaries. Do not replace the cross-job artifacts with
+`GITHUB_ENV`, `GITHUB_PATH`, a workspace action checkout, or
+another formatter-writable channel.
 
 ## Verify
 

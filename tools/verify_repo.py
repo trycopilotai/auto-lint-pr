@@ -250,24 +250,53 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("reusable workflow uses the caller workflow revision")
     if "secrets.token" in reusable:
         raise ValueError("one credential cannot serve checkout and publication")
+    if "\n  verify:\n" not in reusable:
+        raise ValueError("reusable workflow has no isolated verify job")
     if "\n  publish:\n" not in reusable:
         raise ValueError("reusable workflow has no isolated publish job")
-    prepare, publish = reusable.split("\n  publish:\n", maxsplit=1)
+    prepare, remaining = reusable.split("\n  verify:\n", maxsplit=1)
+    verify, publish = remaining.split("\n  publish:\n", maxsplit=1)
     if 'token: "${{ github.token }}"' in prepare:
         raise ValueError("prepare job receives the publication token")
+    if 'token: "${{ github.token }}"' in verify:
+        raise ValueError("verify job receives the publication token")
     if 'token: "${{ github.token }}"' not in publish:
         raise ValueError("publish job does not receive the repository token")
     checkout_token = "secrets.checkout_token || github.token"
-    if publish.count("actions/checkout@") != 2:
-        raise ValueError("publish job checkout count is wrong")
-    if publish.count(checkout_token) != 2:
-        raise ValueError("publish job has an implicit checkout credential")
+    if verify.count("actions/checkout@") != 2:
+        raise ValueError("verify job checkout count is wrong")
+    if verify.count(checkout_token) != 1:
+        raise ValueError("verify job action checkout credential is wrong")
+    if "phase: verify" not in verify:
+        raise ValueError("verify job does not run the verification phase")
+    if "consumer-base.bundle" not in verify:
+        raise ValueError("verify job does not package the exact consumer base")
+    if "auto-lint-pr.tar.gz" not in verify:
+        raise ValueError("verify job does not package the pinned action")
+    if "actions/upload-artifact@" not in verify:
+        raise ValueError("verify job does not upload publication inputs")
+    if "actions/checkout@" in publish:
+        raise ValueError("publish job performs a network checkout")
+    if checkout_token in publish:
+        raise ValueError("checkout credential enters the publish job")
+    for required in (
+        "action-archive-sha",
+        "consumer-bundle-sha",
+        "state-sha",
+        "verification-sha",
+        "auto-lint-pr-publication",
+        'GH_TOKEN: ""',
+        'GITHUB_TOKEN: ""',
+        "phase: publish",
+    ):
+        if required not in publish:
+            raise ValueError(f"publish package boundary is missing: {required}")
     if "actions/upload-artifact@" not in prepare:
         raise ValueError("prepare job does not upload its state artifact")
     if "actions/download-artifact@" not in publish:
-        raise ValueError("publish job does not download its state artifact")
-    if "needs: prepare" not in publish:
-        raise ValueError("publish job is not ordered after prepare")
+        raise ValueError("publish job does not download publication inputs")
+    if "- prepare" not in publish or "- verify" not in publish:
+        raise ValueError("publish job is not ordered after verification")
     if "issues: write" not in publish:
         raise ValueError("publish job cannot apply labels")
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(

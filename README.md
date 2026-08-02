@@ -10,24 +10,27 @@ Turn pinned
 formatter output into a reviewable pull request without
 granting the formatter step a write token.
 
-The transaction has two credential phases:
+The transaction uses three jobs across two credential
+phases:
 
 1. A token-free phase verifies the pinned lint release,
    applies formatting, optionally runs one consumer command,
    and records the exact file delta.
-2. A fresh publish job restores and re-verifies that delta
-   in a subprocess with token variables cleared. The job's
-   trusted checkout actions use its non-persistent scoped
-   credential. Only the following publication substep gets
-   that credential as an explicit input; it creates a
-   bot-authored commit and creates or updates the matching
-   pull request.
+2. A fresh read-only job restores and verifies that delta,
+   then packages the exact base commit and pinned action
+   source with path-bound receipts and checksums.
+3. A write-scoped job downloads only that immutable package,
+   validates its checksums, reconstructs the base without a
+   network checkout, and re-verifies with token variables
+   cleared. Only the following project publication substep
+   gets the write token as an explicit input.
 
-The tool refuses to reuse a remote branch unless there is
-exactly one matching open pull request, its base and head
-branches match, its reported head commit matches the remote
-tip, and every branch-only commit is authored and committed
-by `github-actions[bot]` with its documented bot email.
+The tool tolerates at most one matching open pull request.
+When one exists, its base, head repository, head branch, and
+reported head commit must match the remote ref. Reusing any
+existing branch also requires every branch-only commit to be
+authored and committed by `github-actions[bot]` with its
+documented bot email and a valid GitHub-generated signature.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)"
@@ -96,12 +99,13 @@ the reusable workflow for adversarial job isolation.
 
 ## Composite action
 
-The composite action exposes `phase: prepare` and
-`phase: publish`. Run those phases in different jobs. The
-prepare job has read-only permissions and runs the formatter
-and optional hook. The publish job starts from fresh
-checkouts, downloads the state artifact, and invokes the
-publish phase:
+The composite action exposes `phase: prepare`,
+`phase: verify`, and `phase: publish`. Run those phases in
+separate jobs. Prepare runs the formatter and optional hook
+with read-only permissions. Verify restores the state in a
+fresh read-only checkout and packages the exact base and
+action source. Publish reconstructs those inputs, reverifies
+them, and then supplies the write token:
 
 ```yaml
 # Read-only prepare job, after pinned checkouts.
@@ -113,7 +117,15 @@ publish phase:
     state-path: ${{ runner.temp }}/auto-lint-state.json
     verification-path: ${{ runner.temp }}/verified.json
 
-# Fresh publish job, after downloading the state artifact.
+# Fresh read-only verification job.
+- uses: ./dependencies/auto-lint-pr
+  with:
+    phase: verify
+    cwd: workspace
+    state-path: ${{ runner.temp }}/auto-lint-state.json
+    verification-path: ${{ runner.temp }}/verified.json
+
+# Write-scoped publication job, after package validation.
 - uses: ./dependencies/auto-lint-pr
   with:
     phase: publish
@@ -127,11 +139,11 @@ The action exposes `docker`, `modified`, `paths`,
 `files-from0`, `languages`, `hook`, `labels`, `reviewers`,
 `title`, and `body` inputs. The reusable workflow at
 `.github/workflows/auto-lint-pr.yml` supplies the complete
-two-job artifact bridge, fresh checkouts, its permission
-ceiling, and per-repository/base concurrency. Its optional
-`checkout_token` secret is used only to read private
-dependency repositories. Publication always uses the calling
-repository's `github.token`.
+three-job artifact bridge, fresh read-only checkouts, its
+permission ceiling, and per-repository/base concurrency. Its
+optional `checkout_token` secret is used only to read
+private dependency repositories. Publication always uses the
+calling repository's `github.token`.
 
 ## Reusable workflow
 
@@ -163,9 +175,11 @@ The called jobs check out this repository at
 `job.workflow_sha`, so the local composite action and the
 reusable workflow come from the same pinned commit. The
 formatter job cannot carry command-file or action-checkout
-changes into the fresh publisher job. These workflow
-identity fields are documented for GitHub Cloud and are not
-available on GitHub Enterprise Server.
+changes into the fresh verifier. The write-scoped job has no
+network checkout and accepts only the checksum-bound package
+from that verifier. These workflow identity fields are
+documented for GitHub Cloud and are not available on GitHub
+Enterprise Server.
 
 ## Comparison
 
@@ -174,12 +188,12 @@ Reviewed 2026-08-02 against the official
 Both tools create or update pull requests from repository
 changes, but they own different transaction boundaries.
 
-| Boundary        | `auto-lint-pr`                                                                                                                                      | `peter-evans/create-pull-request`                                                                               |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                                                  | Consumes changes already present in the Actions workspace.                                                      |
-| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                                          | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
-| Credentials     | Clears token variables from the formatter and verifier subprocesses; passes the job-scoped token explicitly to publication only after verification. | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
-| Existing branch | Audits branch-only commits and paths, then atomically appends the exact delta only while the expected head still matches.                           | Creates or updates the configured pull request branch.                                                          |
+| Boundary        | `auto-lint-pr`                                                                                                                                           | `peter-evans/create-pull-request`                                                                               |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                                                       | Consumes changes already present in the Actions workspace.                                                      |
+| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                                               | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
+| Credentials     | Keeps formatter and packaging jobs read-only; clears token variables during final verification; passes the write token only to project publication code. | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
+| Existing branch | Audits branch-only commits and paths, then atomically appends the exact delta only while the expected head still matches.                                | Creates or updates the configured pull request branch.                                                          |
 
 Choose based on which boundary the workflow needs. This
 table does not claim that one tool is a drop-in replacement
@@ -195,13 +209,13 @@ for the other.
   tokens, Actions runtime tokens, or runner command-file
   paths.
 - Formatting and the optional hook run in a read-only job.
-  Publication runs in a fresh job with fresh action and
-  consumer checkouts.
-- Before the publication input is passed, the fresh job
-  restores the recorded regular-file delta in a subprocess
-  with token variables cleared and binds its exact state,
-  bytes, modes, base commit, and checkout to a verification
-  receipt.
+  Verification runs in a second read-only job with fresh
+  action and consumer checkouts.
+- The write-scoped job performs no network checkout. It
+  verifies the read-only job's checksums, reconstructs the
+  exact base and pinned action source, then restores the
+  recorded delta in a subprocess with token variables
+  cleared.
 - Publishing uses GitHub's expected-head commit mutation
   with the exact bytes recorded during token-free
   preparation.
@@ -217,10 +231,11 @@ for the other.
 - Ambiguous mutation failures retain the publication branch
   for an audited retry. The action never performs a
   race-prone automatic branch deletion.
-- Existing branches are reused only when their matching pull
-  request belongs to the same repository, every branch-only
-  commit passes those provenance checks, and their changed
-  paths exactly match the prepared delta.
+- Existing branches are reused only when every branch-only
+  commit passes those provenance checks and their changed
+  paths exactly match the prepared delta. At most one
+  matching pull request may exist; when present, its base,
+  head repository, head branch, and reported tip must match.
 - The source checkout must be clean before preparation.
 - A formatter or hook failure stops before branch or pull
   request operations.
