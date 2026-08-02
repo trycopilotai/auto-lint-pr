@@ -7,9 +7,11 @@ formatter produced.
 
 `auto-lint-pr` treats that proof as a transaction with two
 jobs. The first job prepares a delta without publication
-credentials. The second begins from fresh checkouts,
-restores the recorded delta, verifies it, and only then
-enters the substep that receives a write token.
+credentials. The second begins from fresh trusted checkouts.
+Its verifier subprocess clears token variables, restores the
+recorded delta, and verifies it before the following
+publication substep receives the job-scoped token as an
+explicit input.
 
 This is a draft about that boundary. It is not a release
 announcement.
@@ -39,8 +41,10 @@ convention.
 
 The publish job does not reuse the formatter workspace. It
 starts from fresh action and consumer checkouts, downloads
-the state artifact, and runs the restore-and-verify phase
-without a write token.
+the state artifact, and runs the restore-and-verify phase in
+a subprocess whose GitHub token variables are cleared. The
+trusted checkout actions may use the job-scoped token, but
+do not persist it.
 
 Verification binds the state record to the expected base
 checkout, recreates the regular-file delta, and writes a
@@ -49,10 +53,10 @@ refuses a stale base, a changed state file, a changed
 receipt, unsupported file kinds or modes, and residue
 outside the prepared paths.
 
-The workflow places token injection in the following
-composite action substep. The credentialed process consumes
-the already verified state and receipt. It does not rerun
-the formatter or the hook.
+The workflow passes the job-scoped token explicitly only to
+the following composite action substep. That credentialed
+process consumes the already verified state and receipt. It
+does not rerun the formatter or the hook.
 
 ## Publish uses the verified bytes
 

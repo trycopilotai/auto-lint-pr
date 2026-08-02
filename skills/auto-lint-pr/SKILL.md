@@ -34,9 +34,11 @@ They must not receive `GITHUB_TOKEN`, `GH_TOKEN`, or Actions
 runtime credentials or runner command-file paths. Run
 prepare in a read-only job. Run publish in a fresh job with
 fresh checkouts after transferring only the prepared state
-artifact. Its first token-free substep restores and verifies
-the exact delta; its next substep may receive the write
-token.
+artifact. Its first subprocess clears token variables,
+restores, and verifies the exact delta; its next substep may
+receive the write token explicitly. Trusted checkout actions
+in the publish job may use that job-scoped token, but must
+not persist it.
 
 Use a local checkout of the composite action when direct
 cross-repository workflow references are not approved. Check

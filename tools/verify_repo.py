@@ -257,6 +257,11 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("prepare job receives the publication token")
     if 'token: "${{ github.token }}"' not in publish:
         raise ValueError("publish job does not receive the repository token")
+    checkout_token = "secrets.checkout_token || github.token"
+    if publish.count("actions/checkout@") != 2:
+        raise ValueError("publish job checkout count is wrong")
+    if publish.count(checkout_token) != 2:
+        raise ValueError("publish job has an implicit checkout credential")
     if "actions/upload-artifact@" not in prepare:
         raise ValueError("prepare job does not upload its state artifact")
     if "actions/download-artifact@" not in publish:
@@ -273,9 +278,14 @@ def verify_actions(files: list[Path]) -> None:
         "gpg.ssh.allowedSignersFile=.github/release-allowed-signers",
         'verify-tag "$RELEASE_REF"',
         "release-commit:",
+        "release-tag-object:",
         "needs.verify.outputs.release-commit",
+        "needs.verify.outputs.release-tag-object",
         'ref: "${{ needs.verify.outputs.release-commit }}"',
         '"$RELEASE_COMMIT"',
+        '"$RELEASE_TAG_OBJECT"',
+        'rev-parse "$RELEASE_REF^{tag}"',
+        'test "$remote_tag_object" = "$RELEASE_TAG_OBJECT"',
         "python3 tools/verify_release.py --ref",
     ):
         if required not in release:

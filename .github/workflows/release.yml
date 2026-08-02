@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release-commit: "${{ steps.release.outputs.commit }}"
+      release-tag-object:
+        "${{ steps.release.outputs.tag-object }}"
     steps:
       - name: Check out release source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -45,6 +47,9 @@ jobs:
             "$(git rev-parse HEAD)"
           printf 'commit=%s\n' \
             "$(git rev-list -n 1 "$RELEASE_REF")" >> \
+            "$GITHUB_OUTPUT"
+          printf 'tag-object=%s\n' \
+            "$(git rev-parse "$RELEASE_REF^{tag}")" >> \
             "$GITHUB_OUTPUT"
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -80,6 +85,8 @@ jobs:
     env:
       RELEASE_COMMIT:
         "${{ needs.verify.outputs.release-commit }}"
+      RELEASE_TAG_OBJECT:
+        "${{ needs.verify.outputs.release-tag-object }}"
     steps:
       - name: Check out release source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -122,14 +129,15 @@ jobs:
         shell: bash
         run: |
           version="${RELEASE_REF#v}"
-          tag_object="$(
+          remote_tag_object="$(
             gh api \
               "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_REF" \
               --jq '.object | select(.type == "tag") | .sha'
           )"
+          test "$remote_tag_object" = "$RELEASE_TAG_OBJECT"
           tag_commit="$(
             gh api \
-              "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" \
+              "repos/$GITHUB_REPOSITORY/git/tags/$remote_tag_object" \
               --jq .object.sha
           )"
           test "$tag_commit" = "$RELEASE_COMMIT"

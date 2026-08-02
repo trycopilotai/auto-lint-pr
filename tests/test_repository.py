@@ -92,6 +92,11 @@ class WorkflowMetadataTest(unittest.TestCase):
         prepare, publish = text.split("\n  publish:\n", maxsplit=1)
         self.assertNotIn('token: "${{ github.token }}"', prepare)
         self.assertIn('token: "${{ github.token }}"', publish)
+        self.assertEqual(2, publish.count("actions/checkout@"))
+        self.assertEqual(
+            2,
+            publish.count("secrets.checkout_token || github.token"),
+        )
 
     def test_readme_requires_caller_write_permissions(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -169,9 +174,17 @@ class WorkflowMetadataTest(unittest.TestCase):
         )
         self.assertIn('verify-tag "$RELEASE_REF"', workflow)
         self.assertIn("release-commit:", workflow)
+        self.assertIn("release-tag-object:", workflow)
         self.assertIn("needs.verify.outputs.release-commit", workflow)
+        self.assertIn("needs.verify.outputs.release-tag-object", workflow)
         self.assertIn('ref: "${{ needs.verify.outputs.release-commit }}"', workflow)
         self.assertIn('"$RELEASE_COMMIT"', workflow)
+        self.assertIn('"$RELEASE_TAG_OBJECT"', workflow)
+        self.assertIn('rev-parse "$RELEASE_REF^{tag}"', workflow)
+        self.assertIn(
+            'test "$remote_tag_object" = "$RELEASE_TAG_OBJECT"',
+            workflow,
+        )
         self.assertIn("python3 tools/verify_release.py --ref", workflow)
         self.assertIn('"$RELEASE_REF"', workflow)
         self.assertRegex(

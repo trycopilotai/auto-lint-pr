@@ -16,9 +16,12 @@ The transaction has two credential phases:
    applies formatting, optionally runs one consumer command,
    and records the exact file delta.
 2. A fresh publish job restores and re-verifies that delta
-   without credentials. Only its following trusted substep
-   receives the write token, creates a bot-authored commit,
-   and creates or updates the matching pull request.
+   in a subprocess with token variables cleared. The job's
+   trusted checkout actions use its non-persistent scoped
+   credential. Only the following publication substep gets
+   that credential as an explicit input; it creates a
+   bot-authored commit and creates or updates the matching
+   pull request.
 
 The tool refuses to reuse a remote branch unless there is
 exactly one matching open pull request, its base and head
@@ -171,12 +174,12 @@ Reviewed 2026-08-02 against the official
 Both tools create or update pull requests from repository
 changes, but they own different transaction boundaries.
 
-| Boundary        | `auto-lint-pr`                                                                                                            | `peter-evans/create-pull-request`                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                        | Consumes changes already present in the Actions workspace.                                                      |
-| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
-| Credentials     | Gives the write token only to the trusted publish substep after fresh-job verification.                                   | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
-| Existing branch | Audits branch-only commits and paths, then atomically appends the exact delta only while the expected head still matches. | Creates or updates the configured pull request branch.                                                          |
+| Boundary        | `auto-lint-pr`                                                                                                                                      | `peter-evans/create-pull-request`                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                                                  | Consumes changes already present in the Actions workspace.                                                      |
+| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                                          | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
+| Credentials     | Clears token variables from the formatter and verifier subprocesses; passes the job-scoped token explicitly to publication only after verification. | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
+| Existing branch | Audits branch-only commits and paths, then atomically appends the exact delta only while the expected head still matches.                           | Creates or updates the configured pull request branch.                                                          |
 
 Choose based on which boundary the workflow needs. This
 table does not claim that one tool is a drop-in replacement
@@ -194,8 +197,9 @@ for the other.
 - Formatting and the optional hook run in a read-only job.
   Publication runs in a fresh job with fresh action and
   consumer checkouts.
-- Before token injection, the fresh job restores the
-  recorded regular-file delta and binds its exact state,
+- Before the publication input is passed, the fresh job
+  restores the recorded regular-file delta in a subprocess
+  with token variables cleared and binds its exact state,
   bytes, modes, base commit, and checkout to a verification
   receipt.
 - Publishing uses GitHub's expected-head commit mutation
