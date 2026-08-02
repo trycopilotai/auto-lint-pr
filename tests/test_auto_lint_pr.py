@@ -357,6 +357,21 @@ class CommandTest(unittest.TestCase):
 
 
 class DependencyTrustTest(unittest.TestCase):
+    def test_json_trust_inputs_reject_duplicate_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "duplicate.json"
+            path.write_text(
+                '{"schema": 1, "schema": 2}\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.DependencyError,
+                "duplicate JSON field: schema",
+            ):
+                AUTO_LINT_PR.load_json(path)
+
     def test_release_verification_ignores_host_git_redirection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lint_root = Path(directory) / "lint"

@@ -280,9 +280,21 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise DependencyError(f"duplicate JSON field: {key}")
+        value[key] = item
+    return value
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_pairs,
+        )
     except (OSError, json.JSONDecodeError) as error:
         raise DependencyError(f"could not load {path}") from error
     if not isinstance(value, dict):
