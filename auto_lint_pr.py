@@ -1212,78 +1212,6 @@ def create_remote_branch(
         raise error
 
 
-def delete_remote_branch(
-    repository_name: str,
-    branch: str,
-    expected_tip: str,
-    environment: Mapping[str, str],
-) -> None:
-    """Delete a just-created branch only at its verified exact tip."""
-
-    actual_tip = remote_tip(repository_name, branch, environment)
-    if actual_tip != expected_tip:
-        raise SafetyError("cleanup branch changed before deletion")
-    gh_api(
-        [
-            "--method",
-            "DELETE",
-            f"repos/{repository_name}/git/refs/heads/{branch}",
-        ],
-        environment,
-    )
-    if remote_tip(repository_name, branch, environment) is not None:
-        raise SafetyError("cleanup branch still exists after deletion")
-
-
-def staging_branch_name(
-    branch: str,
-    expected_head: str,
-    records: list[dict[str, str]],
-) -> str:
-    """Return a deterministic private staging ref for one exact transaction."""
-
-    payload = json.dumps(
-        {
-            "branch": branch,
-            "expected_head": expected_head,
-            "records": records,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    suffix = hashlib.sha256(payload).hexdigest()[:16]
-    return f"{branch}-staging-{suffix}"
-
-
-def advance_remote_branch(
-    repository_name: str,
-    branch: str,
-    expected_head: str,
-    published_commit: str,
-    environment: Mapping[str, str],
-) -> None:
-    """Fast-forward a target ref only after its staged commit is verified."""
-
-    actual_tip = remote_tip(repository_name, branch, environment)
-    if actual_tip != expected_head:
-        raise SafetyError("publication branch changed before promotion")
-    gh_api(
-        [
-            "--method",
-            "PATCH",
-            f"repos/{repository_name}/git/refs/heads/{branch}",
-            "-f",
-            f"sha={published_commit}",
-            "-F",
-            "force=false",
-        ],
-        environment,
-    )
-    promoted_tip = remote_tip(repository_name, branch, environment)
-    if promoted_tip != published_commit:
-        raise SafetyError("promoted commit is not the publication branch tip")
-
-
 def create_signed_commit(
     repository_name: str,
     branch: str,
@@ -1447,63 +1375,53 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         branch,
         environment,
     )
-    if pull_request is None and tip is not None:
-        raise SafetyError("remote auto-lint branch has no matching open PR")
     if pull_request is not None and tip is None:
         raise SafetyError("open auto-lint PR has no remote head branch")
     if pull_request is not None:
         require_matching_pull_tip(pull_request, tip)
 
-    created_branch = False
-    staging_branch = None
-    publication_branch = branch
+    published_commit = None
     expected_head = state["base_head"]
     if tip is not None:
-        branch_commits(
-            repository_name,
-            state["base_head"],
-            tip,
-            environment,
-        )
-        branch_tree = remote_tree(repository_name, tip, environment)
-        if validate_existing_branch_tree(
-            base_tree,
-            branch_tree,
-            state["delta"],
-        ):
-            number = pull_request.get("number")
-            if not isinstance(number, int):
-                raise CommandError("pull request response is missing its number")
-            apply_labels_and_reviewers(
+        if tip == state["base_head"] and pull_request is None:
+            expected_head = tip
+        else:
+            branch_commits(
                 repository_name,
-                number,
-                arguments.label,
-                arguments.reviewer,
+                state["base_head"],
+                tip,
                 environment,
             )
-            result = {
-                "changed": False,
-                "pull_request": number,
-                "schema": 1,
-            }
-            write_action_output("changed", "false")
-            write_action_output("pull-request", str(number))
-            return result
-        expected_head = tip
-        staging_branch = staging_branch_name(
-            branch,
-            expected_head,
-            state["delta"],
-        )
-        if remote_tip(repository_name, staging_branch, environment) is not None:
-            raise SafetyError("transaction staging branch already exists")
-        create_remote_branch(
-            repository_name,
-            staging_branch,
-            expected_head,
-            environment,
-        )
-        publication_branch = staging_branch
+            branch_tree = remote_tree(repository_name, tip, environment)
+            if validate_existing_branch_tree(
+                base_tree,
+                branch_tree,
+                state["delta"],
+            ):
+                if pull_request is None:
+                    published_commit = tip
+                else:
+                    number = pull_request.get("number")
+                    if not isinstance(number, int):
+                        raise CommandError(
+                            "pull request response is missing its number"
+                        )
+                    apply_labels_and_reviewers(
+                        repository_name,
+                        number,
+                        arguments.label,
+                        arguments.reviewer,
+                        environment,
+                    )
+                    result = {
+                        "changed": False,
+                        "pull_request": number,
+                        "schema": 1,
+                    }
+                    write_action_output("changed", "false")
+                    write_action_output("pull-request", str(number))
+                    return result
+            expected_head = tip
     else:
         create_remote_branch(
             repository_name,
@@ -1511,77 +1429,45 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
             state["base_head"],
             environment,
         )
-        created_branch = True
 
-    published_commit = None
-    try:
-        published_commit, published_signature = create_signed_commit(
-            repository_name,
-            publication_branch,
-            expected_head,
-            state["delta"],
-            "Apply automated formatting",
-            environment,
-        )
-        verify_created_commit(
-            repository_name,
-            published_commit,
-            published_signature,
-            environment,
-        )
-        published_tree = remote_tree(
-            repository_name,
-            published_commit,
-            environment,
-        )
-        if not validate_existing_branch_tree(
-            base_tree,
-            published_tree,
-            state["delta"],
-        ):
-            raise SafetyError("published tree differs from the prepared delta")
-        published_tip = remote_tip(
-            repository_name,
-            publication_branch,
-            environment,
-        )
-        if published_tip != published_commit:
-            raise SafetyError("published commit is not the branch tip")
-        if staging_branch is not None:
-            advance_remote_branch(
+    if published_commit is None:
+        try:
+            published_commit, published_signature = create_signed_commit(
                 repository_name,
                 branch,
                 expected_head,
-                published_commit,
+                state["delta"],
+                "Apply automated formatting",
                 environment,
             )
-            delete_remote_branch(
+            verify_created_commit(
                 repository_name,
-                staging_branch,
+                published_commit,
+                published_signature,
+                environment,
+            )
+            published_tree = remote_tree(
+                repository_name,
                 published_commit,
                 environment,
             )
-            staging_branch = None
-    except AutoLintError as error:
-        cleanup_branch = staging_branch
-        if created_branch:
-            cleanup_branch = branch
-        if cleanup_branch is not None:
-            cleanup_tip = expected_head
-            if published_commit is not None:
-                cleanup_tip = published_commit
-            try:
-                delete_remote_branch(
-                    repository_name,
-                    cleanup_branch,
-                    cleanup_tip,
-                    environment,
-                )
-            except AutoLintError as cleanup_error:
-                raise SafetyError(
-                    "commit failed and its staging branch cleanup also failed"
-                ) from cleanup_error
-        raise error
+            if not validate_existing_branch_tree(
+                base_tree,
+                published_tree,
+                state["delta"],
+            ):
+                raise SafetyError("published tree differs from the prepared delta")
+            published_tip = remote_tip(
+                repository_name,
+                branch,
+                environment,
+            )
+            if published_tip != published_commit:
+                raise SafetyError("published commit is not the branch tip")
+        except AutoLintError as error:
+            raise SafetyError(
+                "commit outcome is ambiguous; publication branch retained"
+            ) from error
 
     if pull_request is not None:
         pull_request = select_existing_pull_request(
@@ -1598,7 +1484,6 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         )
 
     if pull_request is None:
-        response_received = False
         try:
             response = gh_api(
                 [
@@ -1616,7 +1501,6 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                 ],
                 environment,
             )
-            response_received = True
             if not isinstance(response, dict):
                 raise CommandError("pull request creation returned invalid data")
             pull_request = select_existing_pull_request(
@@ -1651,20 +1535,6 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                 ) from reconciliation_error
             if pull_request is not None:
                 pass
-            elif response_received:
-                try:
-                    delete_remote_branch(
-                        repository_name,
-                        branch,
-                        published_commit,
-                        environment,
-                    )
-                except AutoLintError as cleanup_error:
-                    raise SafetyError(
-                        "pull request creation failed and the new branch "
-                        "cleanup also failed"
-                    ) from cleanup_error
-                raise error
             else:
                 raise SafetyError(
                     "pull request creation outcome is ambiguous; "

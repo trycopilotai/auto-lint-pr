@@ -161,12 +161,12 @@ Reviewed 2026-08-02 against the official
 Both tools create or update pull requests from repository
 changes, but they own different transaction boundaries.
 
-| Boundary        | `auto-lint-pr`                                                                                                                | `peter-evans/create-pull-request`                                                                               |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                            | Consumes changes already present in the Actions workspace.                                                      |
-| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                    | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
-| Credentials     | Gives the write token only to the trusted publish substep after fresh-job verification.                                       | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
-| Existing branch | Requires one matching open pull request, audits branch-only commits and paths, verifies a staging commit, then fast-forwards. | Creates or updates the configured pull request branch.                                                          |
+| Boundary        | `auto-lint-pr`                                                                                                            | `peter-evans/create-pull-request`                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Change producer | Runs pinned lint and an optional hook in a token-free prepare job.                                                        | Consumes changes already present in the Actions workspace.                                                      |
+| Selected delta  | Records and restores the exact regular-file delta produced during prepare.                                                | Adds all new and modified files by default; `add-paths` can restrict paths.                                     |
+| Credentials     | Gives the write token only to the trusted publish substep after fresh-job verification.                                   | Uses `token` for pull request operations and `branch-token` for branch updates; both default to `GITHUB_TOKEN`. |
+| Existing branch | Audits branch-only commits and paths, then atomically appends the exact delta only while the expected head still matches. | Creates or updates the configured pull request branch.                                                          |
 
 Choose based on which boundary the workflow needs. This
 table does not claim that one tool is a drop-in replacement
@@ -197,10 +197,12 @@ for the other.
 - Every published commit must be authored and committed by
   the Actions bot using its documented bot identity and must
   carry a valid GitHub-generated signature.
-- An existing pull-request branch is updated only after its
-  candidate commit passes on a transaction-specific staging
-  branch. Promotion is a non-forced fast-forward, and the
-  staging branch is then removed.
+- An existing pull-request branch is updated by the same
+  expected-head commit mutation. A concurrent ref change
+  makes that mutation fail.
+- Ambiguous mutation failures retain the publication branch
+  for an audited retry. The action never performs a
+  race-prone automatic branch deletion.
 - Existing branches are reused only when their matching pull
   request belongs to the same repository, every branch-only
   commit passes those provenance checks, and their changed

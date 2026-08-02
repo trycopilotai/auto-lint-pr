@@ -68,9 +68,11 @@ Set `persist-credentials: false` on every checkout. Use
 concurrency keyed by repository and base branch. Do not use
 `pull_request_target`.
 
-Keep existing-branch updates behind a temporary staging ref.
-Verify its exact tree and commit provenance before a
-non-forced fast-forward of the pull-request branch.
+Update an existing branch only through an expected-head
+commit mutation that atomically compares its audited tip.
+Retain the branch after an ambiguous mutation result so a
+later run can audit and reconcile it; do not delete it with
+a separate check-then-delete sequence.
 
 Use a separate read-only checkout credential when the
 dependencies are private. Never pass that credential to the

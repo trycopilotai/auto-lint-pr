@@ -68,10 +68,13 @@ Updating an existing branch adds another boundary. The tool
 accepts only one matching open pull request whose base, head
 repository, head branch, and reported head commit agree with
 the remote ref. It audits the branch-only commits and
-changed paths. A replacement commit is first created on a
-transaction-specific staging branch, verified there, and
-promoted with a non-forced fast-forward only if the target
-branch still has the expected tip.
+changed paths. GitHub then appends the exact replacement
+delta only if its expected-head commit still matches the
+branch tip.
+
+Ambiguous mutation failures retain the publication branch so
+a later run can audit and reconcile it. The transaction does
+not attempt a race-prone automatic branch deletion.
 
 If the existing branch already contains the exact prepared
 delta, a retry does not create another commit. It still
