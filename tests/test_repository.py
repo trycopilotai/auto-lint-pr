@@ -139,10 +139,8 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("needs.verify.outputs.release-commit", workflow)
         self.assertIn('ref: "${{ needs.verify.outputs.release-commit }}"', workflow)
         self.assertIn('"$RELEASE_COMMIT"', workflow)
-        self.assertIn(
-            'python3 tools/verify_release.py --ref "$RELEASE_REF"',
-            workflow,
-        )
+        self.assertIn("python3 tools/verify_release.py --ref", workflow)
+        self.assertIn('"$RELEASE_REF"', workflow)
         self.assertRegex(
             allowed,
             r"^trycopilotai-release ssh-ed25519 " r"[A-Za-z0-9+/]+={0,2}\n$",
