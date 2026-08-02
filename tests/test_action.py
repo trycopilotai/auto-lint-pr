@@ -51,6 +51,12 @@ class ActionCommandTest(unittest.TestCase):
         self.assertEqual(2, command.count("--language"))
         self.assertEqual(2, command.count("--label"))
         self.assertEqual(1, command.count("--reviewer"))
+        self.assertIn("--dependency", command)
+        self.assertIn("--allowed-signers", command)
+        self.assertIn(
+            str(ROOT / ".github" / "lint-release-allowed-signers"),
+            command,
+        )
 
     def test_modified_scope_does_not_add_all(self) -> None:
         environment = {

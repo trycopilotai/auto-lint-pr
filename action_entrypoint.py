@@ -53,6 +53,10 @@ def command(phase: str) -> list[str]:
                 os.environ["LINT_ROOT"],
                 "--manifest",
                 str(action_path / "lint-release-manifest.json"),
+                "--dependency",
+                str(action_path / "lint-dependency.json"),
+                "--allowed-signers",
+                str(action_path / ".github" / "lint-release-allowed-signers"),
             ]
         )
     if phase in {"verify", "publish"}:

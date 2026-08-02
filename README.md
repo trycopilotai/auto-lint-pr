@@ -13,9 +13,12 @@ granting the formatter step a write token.
 The transaction uses three jobs across two credential
 phases:
 
-1. A token-free phase verifies the pinned lint release,
-   applies formatting, optionally runs one consumer command,
-   and records the exact file delta.
+1. A token-free phase verifies the controller-bound lint
+   dependency ledger, signed tag, commit, tree, reproducible
+   archive checksum, and complete image digest set. It then
+   applies formatting with exact `image@sha256:...`
+   references, optionally runs one consumer command, and
+   records the exact file delta.
 2. A fresh read-only job restores and verifies that delta,
    then packages the exact base commit and pinned action
    source with path-bound receipts and checksums.
@@ -239,9 +242,18 @@ for the other.
 - The source checkout must be clean before preparation.
 - A formatter or hook failure stops before branch or pull
   request operations.
-- The lint checkout must be clean and its commit must match
-  the vendored release manifest. Tracked, untracked, and
-  ignored residue are all rejected.
+- The lint checkout must be clean. Its annotated tag,
+  operator signature, commit, tree, reproducible source
+  archive, tool map, and complete language-image digest set
+  must match `lint-dependency.json` and
+  `lint-release-manifest.json`. The trusted signer input is
+  held by this controller rather than accepted from the lint
+  checkout. Tracked, untracked, and ignored residue are all
+  rejected.
+- Default Docker execution passes the verified release
+  manifest to lint and runs only exact
+  `ghcr.io/trycopilotai/lint-<language>@sha256:...`
+  references. Version tags are not runtime authority.
 
 This action intentionally needs `contents: write` and
 `pull-requests: write` during publication, plus

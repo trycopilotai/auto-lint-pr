@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -20,6 +22,8 @@ from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = ROOT / "lint-release-manifest.json"
+DEFAULT_DEPENDENCY = ROOT / "lint-dependency.json"
+DEFAULT_ALLOWED_SIGNERS = ROOT / ".github" / "lint-release-allowed-signers"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 BOT_LOGIN = "github-actions[bot]"
 TOKEN_NAMES = (
@@ -42,6 +46,42 @@ ACTION_COMMAND_NAMES = (
 )
 REPOSITORY_PATTERN = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/" r"[A-Za-z0-9_.-]+"
+)
+GIT_OBJECT_PATTERN = re.compile(r"[0-9a-f]{40}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+IMAGE_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+IMAGE_PREFIX = "ghcr.io/trycopilotai/lint-"
+LINT_LANGUAGE_IDS = frozenset(
+    {
+        "bazel",
+        "c",
+        "cpp",
+        "csharp",
+        "css",
+        "go",
+        "html",
+        "java",
+        "javascript",
+        "json",
+        "julia",
+        "kotlin",
+        "less",
+        "markdown",
+        "objective-c",
+        "objective-cpp",
+        "plist",
+        "python",
+        "requirements",
+        "rust",
+        "scss",
+        "shell",
+        "swift",
+        "toml",
+        "tsx",
+        "typescript",
+        "xml",
+        "yaml",
+    }
 )
 
 
@@ -77,6 +117,14 @@ def parser() -> argparse.ArgumentParser:
     argument_parser.add_argument(
         "--manifest",
         default=str(DEFAULT_MANIFEST),
+    )
+    argument_parser.add_argument(
+        "--dependency",
+        default=str(DEFAULT_DEPENDENCY),
+    )
+    argument_parser.add_argument(
+        "--allowed-signers",
+        default=str(DEFAULT_ALLOWED_SIGNERS),
     )
     backend = argument_parser.add_mutually_exclusive_group()
     backend.add_argument(
@@ -141,6 +189,19 @@ def token_free_environment(
     return isolated
 
 
+def dependency_git_environment(
+    environment: Mapping[str, str],
+) -> dict[str, str]:
+    isolated = token_free_environment(environment)
+    for name in list(isolated):
+        if name.startswith("GIT_"):
+            isolated.pop(name)
+    isolated["GIT_CONFIG_GLOBAL"] = os.devnull
+    isolated["GIT_CONFIG_NOSYSTEM"] = "1"
+    isolated["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return isolated
+
+
 def refuse_pull_request_target(
     environment: Mapping[str, str],
 ) -> None:
@@ -171,7 +232,10 @@ def validate_selection(arguments: argparse.Namespace) -> None:
         raise SafetyError("selection modes are mutually exclusive")
 
 
-def lint_command(arguments: argparse.Namespace) -> list[str]:
+def lint_command(
+    arguments: argparse.Namespace,
+    image_manifest: Path | None = None,
+) -> list[str]:
     validate_selection(arguments)
     if arguments.lint_root is None:
         raise SafetyError("prepare requires --lint-root")
@@ -182,12 +246,19 @@ def lint_command(arguments: argparse.Namespace) -> list[str]:
     command = [
         sys.executable,
         str(lint_root / "lint.py"),
-        "--write",
-        "--cwd",
-        str(Path(cwd).resolve()),
     ]
+    command.extend(
+        [
+            "--write",
+            "--cwd",
+            str(Path(cwd).resolve()),
+        ]
+    )
     if arguments.docker:
+        if image_manifest is None:
+            raise SafetyError("Docker lint requires a verified image manifest")
         command.append("--docker")
+        command.extend(["--image-manifest", str(image_manifest)])
     for language in arguments.language:
         command.extend(["--language", language])
     if arguments.modified:
@@ -219,6 +290,267 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def require_exact_keys(
+    value: Mapping[str, Any],
+    expected: set[str],
+    description: str,
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise DependencyError(
+            f"{description} fields differ: missing={missing} extra={extra}"
+        )
+
+
+def require_git_object(value: Any, description: str) -> str:
+    if not isinstance(value, str):
+        raise DependencyError(f"{description} must be a string")
+    if GIT_OBJECT_PATTERN.fullmatch(value) is None:
+        raise DependencyError(f"{description} is invalid")
+    return value
+
+
+def require_sha256(value: Any, description: str) -> str:
+    if not isinstance(value, str):
+        raise DependencyError(f"{description} must be a string")
+    if SHA256_PATTERN.fullmatch(value) is None:
+        raise DependencyError(f"{description} is invalid")
+    return value
+
+
+def lint_language_ids(lint_root: Path) -> tuple[set[str], dict[str, str]]:
+    value = load_json(lint_root / "languages.json")
+    require_exact_keys(
+        value,
+        {"languages", "limits", "policy", "tools"},
+        "lint language manifest",
+    )
+    languages = value.get("languages")
+    tools = value.get("tools")
+    if not isinstance(languages, list):
+        raise DependencyError("lint language manifest languages must be a list")
+    if not isinstance(tools, dict):
+        raise DependencyError("lint language manifest tools must be an object")
+    language_ids: set[str] = set()
+    for record in languages:
+        if not isinstance(record, dict):
+            raise DependencyError("lint language records must be objects")
+        language = record.get("id")
+        if not isinstance(language, str) or language == "":
+            raise DependencyError("lint language id is invalid")
+        if language in language_ids:
+            raise DependencyError(f"lint language id is repeated: {language}")
+        language_ids.add(language)
+    if language_ids != LINT_LANGUAGE_IDS:
+        missing = sorted(LINT_LANGUAGE_IDS - language_ids)
+        extra = sorted(language_ids - LINT_LANGUAGE_IDS)
+        raise DependencyError(
+            f"lint language ids differ: missing={missing} extra={extra}"
+        )
+    pinned_tools: dict[str, str] = {}
+    for tool, version in tools.items():
+        if not isinstance(tool, str) or not isinstance(version, str):
+            raise DependencyError("lint tool versions must be strings")
+        pinned_tools[tool] = version
+    return language_ids, pinned_tools
+
+
+def validate_image_digests(
+    value: Any,
+    language_ids: set[str],
+) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise DependencyError("lint release image digests must be an object")
+    expected = {f"{IMAGE_PREFIX}{language}" for language in language_ids}
+    actual = set(value)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise DependencyError(
+            "lint release image coverage differs: " f"missing={missing} extra={extra}"
+        )
+    digests: dict[str, str] = {}
+    for image, digest in value.items():
+        if not isinstance(image, str) or not isinstance(digest, str):
+            raise DependencyError("lint release image records must be strings")
+        if IMAGE_DIGEST_PATTERN.fullmatch(digest) is None:
+            raise DependencyError(f"lint release image digest is invalid: {image}")
+        digests[image] = digest
+    return digests
+
+
+def selected_image_digests(
+    digests: Mapping[str, str],
+    languages: Sequence[str],
+) -> dict[str, str]:
+    if not languages:
+        return dict(digests)
+    selected: dict[str, str] = {}
+    for language in languages:
+        image = f"{IMAGE_PREFIX}{language}"
+        digest = digests.get(image)
+        if digest is None:
+            raise DependencyError(f"selected lint image is not in the release: {image}")
+        selected[image] = digest
+    return selected
+
+
+def validate_release_manifest(
+    manifest: dict[str, Any],
+    lint_root: Path,
+    dependency: dict[str, Any],
+) -> dict[str, str]:
+    schema = manifest.get("schema_version")
+    if schema != 1:
+        raise DependencyError("unsupported lint release manifest schema")
+    require_exact_keys(
+        manifest,
+        {"images", "release", "schema_version", "source", "tools"},
+        "lint release manifest",
+    )
+
+    release = manifest.get("release")
+    ref = dependency["ref"]
+    if not isinstance(release, str) or release == "":
+        raise DependencyError("lint release version is invalid")
+    if ref != f"refs/tags/v{release}":
+        raise DependencyError("lint dependency ref does not match the release")
+
+    source = manifest.get("source")
+    if not isinstance(source, dict):
+        raise DependencyError("lint release manifest is missing source")
+    require_exact_keys(
+        source,
+        {"archive", "commit", "sha256"},
+        "lint release source",
+    )
+    if source.get("commit") != dependency["commit"]:
+        raise DependencyError("lint release source commit does not match")
+    archive = source.get("archive")
+    if archive != f"lint-{release}.tar.gz":
+        raise DependencyError("lint release source archive name does not match")
+    require_sha256(source.get("sha256"), "lint release archive checksum")
+
+    language_ids, tools = lint_language_ids(lint_root)
+    if manifest.get("tools") != tools:
+        raise DependencyError("lint release tools do not match languages.json")
+    images = manifest.get("images")
+    return validate_image_digests(images, language_ids)
+
+
+def validate_lint_dependency(
+    dependency: dict[str, Any],
+    dependency_path: Path,
+    manifest_path: Path,
+    allowed_signers_path: Path,
+) -> None:
+    require_exact_keys(
+        dependency,
+        {
+            "allowed_signers_sha256",
+            "commit",
+            "manifest",
+            "manifest_sha256",
+            "ref",
+            "repository",
+            "schema",
+            "signer",
+            "tag_object",
+            "tree",
+        },
+        "lint dependency ledger",
+    )
+    if dependency.get("schema") != 2:
+        raise DependencyError("unsupported lint dependency schema")
+    if dependency.get("repository") != "https://github.com/trycopilotai/lint":
+        raise DependencyError("lint dependency repository is invalid")
+    ref = dependency.get("ref")
+    if (
+        not isinstance(ref, str)
+        or re.fullmatch(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+", ref) is None
+    ):
+        raise DependencyError("lint dependency ref is invalid")
+    for name in ("commit", "tag_object", "tree"):
+        require_git_object(dependency.get(name), f"lint dependency {name}")
+    signer = dependency.get("signer")
+    if signer != "trycopilotai-release":
+        raise DependencyError("lint dependency signer is invalid")
+    manifest_name = dependency.get("manifest")
+    if manifest_name != manifest_path.name:
+        raise DependencyError("lint dependency manifest path does not match")
+    expected_manifest = dependency_path.parent / str(manifest_name)
+    if manifest_path != expected_manifest:
+        raise DependencyError("lint dependency manifest location is invalid")
+    expected_manifest_sha = require_sha256(
+        dependency.get("manifest_sha256"),
+        "lint dependency manifest checksum",
+    )
+    if sha256(manifest_path) != expected_manifest_sha:
+        raise DependencyError("lint dependency manifest checksum does not match")
+    expected_signers_sha = require_sha256(
+        dependency.get("allowed_signers_sha256"),
+        "lint dependency allowed-signers checksum",
+    )
+    if allowed_signers_path.is_symlink() or not allowed_signers_path.is_file():
+        raise DependencyError("lint allowed-signers input must be a regular file")
+    if sha256(allowed_signers_path) != expected_signers_sha:
+        raise DependencyError("lint allowed-signers checksum does not match")
+    allowed_lines = allowed_signers_path.read_text(encoding="utf-8").splitlines()
+    if len(allowed_lines) != 1:
+        raise DependencyError("lint allowed-signers input must contain one signer")
+    if not allowed_lines[0].startswith(f"{signer} ssh-ed25519 "):
+        raise DependencyError("lint allowed-signers principal does not match")
+
+
+def git_object_type(
+    repository: Path,
+    object_name: str,
+    environment: Mapping[str, str],
+) -> str:
+    completed = git(
+        repository,
+        "cat-file",
+        "-t",
+        object_name,
+        check=False,
+        environment=environment,
+    )
+    if completed.returncode != 0:
+        raise DependencyError(f"lint release object does not exist: {object_name}")
+    return completed.stdout.strip()
+
+
+def deterministic_archive_sha256(
+    lint_root: Path,
+    ref: str,
+    release: str,
+    environment: Mapping[str, str],
+) -> str:
+    completed = subprocess.run(
+        [
+            "git",
+            "archive",
+            "--format=tar",
+            f"--prefix=lint-{release}/",
+            ref,
+        ],
+        cwd=lint_root,
+        check=False,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise DependencyError(f"could not reproduce lint source archive: {detail}")
+    destination = io.BytesIO()
+    with gzip.GzipFile(filename="", fileobj=destination, mode="wb", mtime=0) as handle:
+        handle.write(completed.stdout)
+    return hashlib.sha256(destination.getvalue()).hexdigest()
+
+
 def git(
     repository: Path,
     *arguments: str,
@@ -247,26 +579,39 @@ def git(
 def verify_lint_release(
     lint_root: Path,
     manifest_path: Path,
+    dependency_path: Path,
+    allowed_signers_path: Path,
 ) -> dict[str, Any]:
+    if dependency_path.is_symlink() or not dependency_path.is_file():
+        raise DependencyError("lint dependency ledger must be a regular file")
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise DependencyError("lint release manifest must be a regular file")
+    if allowed_signers_path.is_symlink() or not allowed_signers_path.is_file():
+        raise DependencyError("lint allowed-signers input must be a regular file")
+    lint_root = lint_root.resolve()
+    manifest_path = manifest_path.resolve()
+    dependency_path = dependency_path.resolve()
+    allowed_signers_path = allowed_signers_path.resolve()
+    if allowed_signers_path.is_relative_to(lint_root):
+        raise DependencyError("lint allowed-signers input must be controller-bound")
+    dependency = load_json(dependency_path)
+    validate_lint_dependency(
+        dependency,
+        dependency_path,
+        manifest_path,
+        allowed_signers_path,
+    )
     manifest = load_json(manifest_path)
-    if manifest.get("schema_version") not in {1, 2}:
-        raise DependencyError("unsupported lint release manifest schema")
-    source = manifest.get("source")
-    if not isinstance(source, dict):
-        raise DependencyError("lint release manifest is missing source")
-    expected_commit = source.get("commit")
-    if not isinstance(expected_commit, str):
-        raise DependencyError("lint release manifest is missing commit")
-    isolated = token_free_environment(os.environ)
+    isolated = dependency_git_environment(os.environ)
     actual_commit = git(
         lint_root,
         "rev-parse",
         "HEAD",
         environment=isolated,
     ).stdout.strip()
-    if actual_commit != expected_commit:
+    if actual_commit != dependency["commit"]:
         raise DependencyError(
-            f"lint checkout is {actual_commit}; expected {expected_commit}"
+            f"lint checkout is {actual_commit}; expected {dependency['commit']}"
         )
     tracked = git(
         lint_root,
@@ -278,6 +623,71 @@ def verify_lint_release(
     ).stdout
     if tracked != "":
         raise DependencyError("lint checkout is not clean")
+    actual_tree = git(
+        lint_root,
+        "rev-parse",
+        "HEAD^{tree}",
+        environment=isolated,
+    ).stdout.strip()
+    if actual_tree != dependency["tree"]:
+        raise DependencyError("lint checkout tree does not match")
+    ref = dependency["ref"]
+    if git_object_type(lint_root, ref, isolated) != "tag":
+        raise DependencyError("lint release ref is not an annotated tag")
+    actual_tag_object = git(
+        lint_root,
+        "rev-parse",
+        ref,
+        environment=isolated,
+    ).stdout.strip()
+    if actual_tag_object != dependency["tag_object"]:
+        raise DependencyError("lint release tag object does not match")
+    peeled_commit = git(
+        lint_root,
+        "rev-parse",
+        f"{ref}^{{commit}}",
+        environment=isolated,
+    ).stdout.strip()
+    if peeled_commit != dependency["commit"]:
+        raise DependencyError("lint release tag does not point at the commit")
+    verification = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"gpg.ssh.allowedSignersFile={allowed_signers_path}",
+            "verify-tag",
+            ref,
+        ],
+        cwd=lint_root,
+        check=False,
+        env=isolated,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if verification.returncode != 0:
+        raise DependencyError("lint release tag signature is not trusted")
+    signature_output = verification.stdout + verification.stderr
+    if dependency["signer"] not in signature_output:
+        raise DependencyError("lint release signature principal does not match")
+    image_digests = validate_release_manifest(manifest, lint_root, dependency)
+    release = manifest["release"]
+    archive_sha = deterministic_archive_sha256(
+        lint_root,
+        ref,
+        release,
+        isolated,
+    )
+    if archive_sha != manifest["source"]["sha256"]:
+        raise DependencyError("lint release archive checksum does not reproduce")
+    manifest["verified_dependency"] = {
+        "commit": dependency["commit"],
+        "dependency_sha256": sha256(dependency_path),
+        "images": image_digests,
+        "manifest_sha256": sha256(manifest_path),
+        "tag_object": dependency["tag_object"],
+        "tree": dependency["tree"],
+    }
     return manifest
 
 
@@ -564,15 +974,25 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
     if arguments.lint_root is None:
         raise SafetyError("prepare requires --lint-root")
     lint_root = Path(arguments.lint_root).resolve()
+    manifest_path = Path(arguments.manifest).resolve()
     manifest = verify_lint_release(
         lint_root,
-        Path(arguments.manifest).resolve(),
+        manifest_path,
+        Path(arguments.dependency),
+        Path(arguments.allowed_signers),
+    )
+    release_binding = manifest.pop("verified_dependency")
+    release_binding["images"] = selected_image_digests(
+        release_binding["images"],
+        arguments.language,
     )
     run_checked(
-        lint_command(arguments),
+        lint_command(arguments, image_manifest=manifest_path),
         cwd=repository,
         environment=isolated,
     )
+    if sha256(manifest_path) != release_binding["manifest_sha256"]:
+        raise DependencyError("lint release manifest changed during formatting")
     if arguments.hook is not None:
         run_checked(
             arguments.hook,
@@ -598,8 +1018,9 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         "cwd": str(repository),
         "delta": records,
         "lint_commit": manifest["source"]["commit"],
+        "lint_release": release_binding,
         "repository": arguments.repository,
-        "schema": 1,
+        "schema": 2,
     }
     write_canonical(Path(arguments.state).resolve(), state)
     write_action_output("changed", str(bool(records)).lower())
@@ -612,7 +1033,7 @@ def transaction_state(path: Path) -> dict[str, Any]:
     """Load and validate one untrusted cross-job state artifact."""
 
     state = load_json(path)
-    if state.get("schema") != 1:
+    if state.get("schema") != 2:
         raise SafetyError("unsupported state schema")
     for name in ("base", "base_head", "branch", "cwd", "lint_commit"):
         if not isinstance(state.get(name), str) or state[name] == "":
@@ -649,6 +1070,43 @@ def transaction_state(path: Path) -> dict[str, Any]:
         else:
             raise SafetyError(f"prepared path has an unsupported kind: {canonical}")
     validate_prepared_modes(records)
+    lint_release = state.get("lint_release")
+    if not isinstance(lint_release, dict):
+        raise SafetyError("transaction lint release must be an object")
+    required_release = {
+        "commit",
+        "dependency_sha256",
+        "images",
+        "manifest_sha256",
+        "tag_object",
+        "tree",
+    }
+    if set(lint_release) != required_release:
+        raise SafetyError("transaction lint release has unexpected fields")
+    if lint_release.get("commit") != state["lint_commit"]:
+        raise SafetyError("transaction lint release commit does not match")
+    for name in (
+        "commit",
+        "tag_object",
+        "tree",
+    ):
+        value = lint_release.get(name)
+        if not isinstance(value, str) or GIT_OBJECT_PATTERN.fullmatch(value) is None:
+            raise SafetyError(f"transaction lint release has an invalid {name}")
+    for name in ("dependency_sha256", "manifest_sha256"):
+        value = lint_release.get(name)
+        if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+            raise SafetyError(f"transaction lint release has an invalid {name}")
+    images = lint_release.get("images")
+    if not isinstance(images, dict) or not images:
+        raise SafetyError("transaction lint release images must be an object")
+    for image, digest in images.items():
+        if not isinstance(image, str) or not image.startswith(IMAGE_PREFIX):
+            raise SafetyError("transaction lint release image is invalid")
+        if not isinstance(digest, str):
+            raise SafetyError("transaction lint release digest must be a string")
+        if IMAGE_DIGEST_PATTERN.fullmatch(digest) is None:
+            raise SafetyError("transaction lint release digest is invalid")
     repository_name = state.get("repository")
     if repository_name is not None:
         if not isinstance(repository_name, str):

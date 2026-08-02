@@ -35,6 +35,20 @@ def load_module():
 
 
 AUTO_LINT_PR = load_module()
+TEST_LINT_COMMIT = "a" * 40
+
+
+def lint_release_record() -> dict[str, object]:
+    return {
+        "commit": TEST_LINT_COMMIT,
+        "dependency_sha256": "b" * 64,
+        "images": {
+            "ghcr.io/trycopilotai/lint-requirements": "sha256:" + "c" * 64,
+        },
+        "manifest_sha256": "d" * 64,
+        "tag_object": "e" * 40,
+        "tree": "f" * 40,
+    }
 
 
 def run_git(repository: Path, *arguments: str) -> str:
@@ -109,21 +123,93 @@ if path.read_text(encoding="utf-8") == "needs-formatting\\n":
         encoding="utf-8",
         newline="\n",
     )
+    (root / "languages.json").write_text(
+        json.dumps(
+            {
+                "languages": [
+                    {
+                        "extensions": [],
+                        "family": "requirements",
+                        "filenames": ["requirements*.txt"],
+                        "id": language,
+                    }
+                    for language in sorted(AUTO_LINT_PR.LINT_LANGUAGE_IDS)
+                ],
+                "limits": {},
+                "policy": "default",
+                "tools": {},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     commit = commit_all(root)
+    signing_key = root.parent / "lint-release-signing-key"
+    subprocess.run(
+        [
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-f",
+            str(signing_key),
+        ],
+        check=True,
+    )
+    run_git(root, "config", "gpg.format", "ssh")
+    run_git(root, "config", "user.signingkey", str(signing_key))
+    run_git(root, "tag", "-s", "-m", "lint fixture", "v0.1.0")
+    public_key = signing_key.with_suffix(".pub").read_text(encoding="utf-8").split()
+    allowed_signers = root.parent / "lint-release-allowed-signers"
+    allowed_signers.write_text(
+        f"trycopilotai-release {public_key[0]} {public_key[1]}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    archive_sha256 = AUTO_LINT_PR.deterministic_archive_sha256(
+        root,
+        "refs/tags/v0.1.0",
+        "0.1.0",
+        AUTO_LINT_PR.token_free_environment(os.environ),
+    )
     manifest = {
-        "images": {},
-        "release": "fixture",
+        "images": {
+            f"ghcr.io/trycopilotai/lint-{language}": "sha256:" + "1" * 64
+            for language in sorted(AUTO_LINT_PR.LINT_LANGUAGE_IDS)
+        },
+        "release": "0.1.0",
         "schema_version": 1,
         "source": {
-            "archive": "lint-fixture.tar.gz",
+            "archive": "lint-0.1.0.tar.gz",
             "commit": commit,
-            "sha256": AUTO_LINT_PR.sha256(script),
+            "sha256": archive_sha256,
         },
         "tools": {},
     }
     manifest_path = root.parent / "lint-manifest.json"
     manifest_path.write_text(
         json.dumps(manifest),
+        encoding="utf-8",
+        newline="\n",
+    )
+    dependency = {
+        "allowed_signers_sha256": AUTO_LINT_PR.sha256(allowed_signers),
+        "commit": commit,
+        "manifest": manifest_path.name,
+        "manifest_sha256": AUTO_LINT_PR.sha256(manifest_path),
+        "ref": "refs/tags/v0.1.0",
+        "repository": "https://github.com/trycopilotai/lint",
+        "schema": 2,
+        "signer": "trycopilotai-release",
+        "tag_object": run_git(root, "rev-parse", "refs/tags/v0.1.0"),
+        "tree": run_git(root, "rev-parse", "HEAD^{tree}"),
+    }
+    (root.parent / "lint-dependency.json").write_text(
+        json.dumps(dependency, sort_keys=True) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -143,6 +229,10 @@ def prepare_arguments(
         str(lint_root),
         "--manifest",
         str(manifest),
+        "--dependency",
+        str(manifest.parent / "lint-dependency.json"),
+        "--allowed-signers",
+        str(manifest.parent / "lint-release-allowed-signers"),
         "--cwd",
         str(consumer),
         "--state",
@@ -170,32 +260,23 @@ def write_default_verification_receipt(
 
 
 class CommandTest(unittest.TestCase):
-    def test_lint_release_schema_two_is_supported(self) -> None:
+    def test_signed_lint_release_is_verified(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lint_root = Path(directory) / "lint"
             manifest_path = write_lint_fixture(lint_root)
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["schema_version"] = 2
-            manifest["source"]["tag"] = "v0.1.5"
-            manifest["source"]["tag_object"] = "a" * 40
-            manifest["images"] = {
-                "digests": {},
-                "inheritance": {"inputs_unchanged": True},
-                "release": "0.1.4",
-                "source_commit": "b" * 40,
-            }
-            manifest_path.write_text(
-                json.dumps(manifest),
-                encoding="utf-8",
-                newline="\n",
-            )
 
             actual = AUTO_LINT_PR.verify_lint_release(
                 lint_root,
                 manifest_path,
+                manifest_path.parent / "lint-dependency.json",
+                manifest_path.parent / "lint-release-allowed-signers",
             )
 
-            self.assertEqual(2, actual["schema_version"])
+            self.assertEqual(1, actual["schema_version"])
+            self.assertEqual(
+                run_git(lint_root, "rev-parse", "HEAD^{tree}"),
+                actual["verified_dependency"]["tree"],
+            )
 
     def test_default_lint_command_is_docker_write_all(self) -> None:
         arguments = AUTO_LINT_PR.parser().parse_args(
@@ -206,12 +287,14 @@ class CommandTest(unittest.TestCase):
             ]
         )
 
-        command = AUTO_LINT_PR.lint_command(arguments)
+        command = AUTO_LINT_PR.lint_command(arguments, Path("/manifest.json"))
 
         self.assertIn("--docker", command)
         self.assertIn("--write", command)
         self.assertIn("--all", command)
         self.assertNotIn("--modified", command)
+        self.assertIn("--image-manifest", command)
+        self.assertNotIn("ghcr.io/trycopilotai/lint-", " ".join(command))
 
     def test_local_backend_is_explicit(self) -> None:
         arguments = AUTO_LINT_PR.parser().parse_args(
@@ -237,7 +320,7 @@ class CommandTest(unittest.TestCase):
             ]
         )
 
-        command = AUTO_LINT_PR.lint_command(arguments)
+        command = AUTO_LINT_PR.lint_command(arguments, Path("/manifest.json"))
 
         self.assertIn("--modified", command)
         self.assertNotIn("--all", command)
@@ -257,7 +340,7 @@ class CommandTest(unittest.TestCase):
             ]
         )
 
-        command = AUTO_LINT_PR.lint_command(arguments)
+        command = AUTO_LINT_PR.lint_command(arguments, Path("/manifest.json"))
 
         self.assertEqual(2, command.count("--language"))
         self.assertIn("src/a.py", command)
@@ -271,6 +354,181 @@ class CommandTest(unittest.TestCase):
         )
         with self.assertRaises(AUTO_LINT_PR.SafetyError):
             AUTO_LINT_PR.normalize_repository("../repository")
+
+
+class DependencyTrustTest(unittest.TestCase):
+    def test_release_verification_ignores_host_git_redirection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            dependency_path = manifest_path.parent / "lint-dependency.json"
+            allowed_signers = manifest_path.parent / "lint-release-allowed-signers"
+            hostile = {
+                "GIT_CONFIG_GLOBAL": str(manifest_path),
+                "GIT_DIR": str(manifest_path.parent / "missing.git"),
+                "GIT_OBJECT_DIRECTORY": str(manifest_path.parent / "missing-objects"),
+            }
+
+            with mock.patch.dict(os.environ, hostile, clear=False):
+                verified = AUTO_LINT_PR.verify_lint_release(
+                    lint_root,
+                    manifest_path,
+                    dependency_path,
+                    allowed_signers,
+                )
+
+            self.assertEqual(
+                run_git(lint_root, "rev-parse", "HEAD"),
+                verified["source"]["commit"],
+            )
+
+    def test_every_dependency_field_is_bound(self) -> None:
+        mutations = {
+            "allowed_signers_sha256": "0" * 64,
+            "commit": "0" * 40,
+            "manifest": "other.json",
+            "manifest_sha256": "0" * 64,
+            "ref": "refs/tags/v9.9.9",
+            "repository": "https://github.com/example/lint",
+            "schema": 1,
+            "signer": "other-release",
+            "tag_object": "0" * 40,
+            "tree": "0" * 40,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            dependency_path = manifest_path.parent / "lint-dependency.json"
+            allowed_signers = manifest_path.parent / "lint-release-allowed-signers"
+            original = json.loads(dependency_path.read_text(encoding="utf-8"))
+            for field, replacement in mutations.items():
+                with self.subTest(field=field):
+                    tampered = dict(original)
+                    tampered[field] = replacement
+                    dependency_path.write_text(
+                        json.dumps(tampered, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    with self.assertRaises(AUTO_LINT_PR.DependencyError):
+                        AUTO_LINT_PR.verify_lint_release(
+                            lint_root,
+                            manifest_path,
+                            dependency_path,
+                            allowed_signers,
+                        )
+
+    def test_every_release_manifest_field_is_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            dependency_path = manifest_path.parent / "lint-dependency.json"
+            allowed_signers = manifest_path.parent / "lint-release-allowed-signers"
+            original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            original_dependency = json.loads(
+                dependency_path.read_text(encoding="utf-8")
+            )
+            mutations = {
+                "extra_top_level": lambda value: value.update({"extra": True}),
+                "schema_version": lambda value: value.update({"schema_version": 9}),
+                "release": lambda value: value.update({"release": "9.9.9"}),
+                "source_archive": lambda value: value["source"].update(
+                    {"archive": "other.tar.gz"}
+                ),
+                "source_commit": lambda value: value["source"].update(
+                    {"commit": "0" * 40}
+                ),
+                "source_sha256": lambda value: value["source"].update(
+                    {"sha256": "0" * 64}
+                ),
+                "source_extra": lambda value: value["source"].update({"extra": True}),
+                "tools": lambda value: value.update({"tools": {"other": "1"}}),
+                "images_missing": lambda value: value.update({"images": {}}),
+                "images_extra": lambda value: value["images"].update(
+                    {"ghcr.io/trycopilotai/lint-other": "sha256:" + "1" * 64}
+                ),
+                "image_digest": lambda value: value["images"].update(
+                    {"ghcr.io/trycopilotai/lint-requirements": "sha256:bad"}
+                ),
+            }
+            for field, mutate in mutations.items():
+                with self.subTest(field=field):
+                    manifest = json.loads(json.dumps(original_manifest))
+                    mutate(manifest)
+                    manifest_path.write_text(
+                        json.dumps(manifest, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    dependency = dict(original_dependency)
+                    dependency["manifest_sha256"] = AUTO_LINT_PR.sha256(manifest_path)
+                    dependency_path.write_text(
+                        json.dumps(dependency, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    with self.assertRaises(AUTO_LINT_PR.DependencyError):
+                        AUTO_LINT_PR.verify_lint_release(
+                            lint_root,
+                            manifest_path,
+                            dependency_path,
+                            allowed_signers,
+                        )
+
+    def test_controller_signer_cannot_come_from_lint_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            dependency_path = manifest_path.parent / "lint-dependency.json"
+            external_signers = manifest_path.parent / "lint-release-allowed-signers"
+            in_tree_signers = lint_root / "allowed-signers"
+            in_tree_signers.write_bytes(external_signers.read_bytes())
+
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.DependencyError,
+                "controller-bound",
+            ):
+                AUTO_LINT_PR.verify_lint_release(
+                    lint_root,
+                    manifest_path,
+                    dependency_path,
+                    in_tree_signers,
+                )
+
+    def test_transaction_rejects_every_release_binding_tamper(self) -> None:
+        state = {
+            "base": "main",
+            "base_head": "1" * 40,
+            "branch": "auto-lint/main",
+            "changed": False,
+            "cwd": ".",
+            "delta": [],
+            "lint_commit": TEST_LINT_COMMIT,
+            "lint_release": lint_release_record(),
+            "repository": "owner/repository",
+            "schema": 2,
+        }
+        mutations = {
+            "commit": "0" * 40,
+            "dependency_sha256": "0",
+            "images": {},
+            "manifest_sha256": "0",
+            "tag_object": "0",
+            "tree": "0",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            for field, replacement in mutations.items():
+                with self.subTest(field=field):
+                    tampered = json.loads(json.dumps(state))
+                    tampered["lint_release"][field] = replacement
+                    state_path.write_text(
+                        json.dumps(tampered),
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                        AUTO_LINT_PR.transaction_state(state_path)
 
 
 class IsolationTest(unittest.TestCase):
@@ -1084,9 +1342,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 "changed": True,
                 "cwd": "/previous/runner/workspace",
                 "delta": records,
-                "lint_commit": "pinned",
+                "lint_commit": TEST_LINT_COMMIT,
+                "lint_release": lint_release_record(),
                 "repository": "owner/repository",
-                "schema": 1,
+                "schema": 2,
             }
             state_path.write_text(json.dumps(state), encoding="utf-8", newline="\n")
             verification = root / "verified.json"
@@ -1134,9 +1393,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": False,
                         "cwd": str(repository),
                         "delta": [],
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1198,9 +1458,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 "changed": True,
                 "cwd": str(repository),
                 "delta": AUTO_LINT_PR.delta_records(repository),
-                "lint_commit": "pinned",
+                "lint_commit": TEST_LINT_COMMIT,
+                "lint_release": lint_release_record(),
                 "repository": "owner/repository",
-                "schema": 1,
+                "schema": 2,
             }
             state_path.write_text(json.dumps(state), encoding="utf-8", newline="\n")
             verification = root / "verified.json"
@@ -1399,9 +1660,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": False,
                         "cwd": str(repository),
                         "delta": [],
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1443,9 +1705,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": False,
                         "cwd": str(repository),
                         "delta": [],
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1484,9 +1747,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": delta,
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1583,9 +1847,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": False,
                         "cwd": str(repository),
                         "delta": [],
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1627,9 +1892,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1721,9 +1987,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1807,9 +2074,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1899,9 +2167,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -1977,9 +2246,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -2057,9 +2327,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -2132,9 +2403,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -2226,9 +2498,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": delta,
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",
@@ -2319,9 +2592,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                         "changed": True,
                         "cwd": str(repository),
                         "delta": AUTO_LINT_PR.delta_records(repository),
-                        "lint_commit": "pinned",
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
                         "repository": "owner/repository",
-                        "schema": 1,
+                        "schema": 2,
                     }
                 ),
                 encoding="utf-8",

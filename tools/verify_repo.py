@@ -25,6 +25,10 @@ LINT_MANIFEST = "lint-release-manifest.json"
 LINT_REF = "refs/tags/v0.1.5"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
 LINT_TAG_OBJECT = "a2630d45e0762e5b87d0474648803cdf9dd6bf42"
+LINT_TREE = "d7b643d6780c02ff32474b7ddde7e0da1c3d8f68"
+LINT_ALLOWED_SIGNERS_SHA256 = (
+    "986887b24aba7609ef5086f1571de978bc2dbcd5f952efc21dbb127e9c1205f7"
+)
 
 
 def verify_skill_entry(skill: Path, platform_name: str) -> None:
@@ -80,6 +84,7 @@ def verify_required_paths() -> None:
         ".github/ISSUE_TEMPLATE/consumer-integration.yml",
         ".github/ISSUE_TEMPLATE/transaction-bug.yml",
         ".github/labels.yml",
+        ".github/lint-release-allowed-signers",
         ".github/release-allowed-signers",
         ".github/workflows/auto-lint-pr.yml",
         ".github/workflows/ci.yml",
@@ -176,13 +181,16 @@ def verify_lint_dependency() -> None:
     path = ROOT / "lint-dependency.json"
     value = json.loads(path.read_text(encoding="utf-8"))
     expected = {
+        "allowed_signers_sha256": LINT_ALLOWED_SIGNERS_SHA256,
         "commit": LINT_COMMIT,
         "manifest": LINT_MANIFEST,
         "manifest_sha256": sha256(ROOT / LINT_MANIFEST),
         "ref": LINT_REF,
         "repository": LINT_REPOSITORY,
-        "schema": 1,
+        "schema": 2,
+        "signer": "trycopilotai-release",
         "tag_object": LINT_TAG_OBJECT,
+        "tree": LINT_TREE,
     }
     if value != expected:
         raise ValueError("lint dependency ledger does not match the release")
@@ -210,8 +218,8 @@ def verify_actions(files: list[Path]) -> None:
 
     for name in ("auto-lint-pr.yml", "ci.yml"):
         workflow = ROOT / ".github" / "workflows" / name
-        if LINT_COMMIT not in workflow.read_text(encoding="utf-8"):
-            raise ValueError(f"workflow does not pin the lint release commit: {name}")
+        if LINT_REF not in workflow.read_text(encoding="utf-8"):
+            raise ValueError(f"workflow does not pin the lint release ref: {name}")
     continuous_integration = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
@@ -230,6 +238,13 @@ def verify_actions(files: list[Path]) -> None:
         'GITHUB_TOKEN: ""',
         'GH_TOKEN: ""',
         '"fixtures/integration/requirements.txt"',
+        "pinned-lint-docker:",
+        "Authenticated exact-digest prefetch",
+        'docker pull "$image"',
+        "docker logout ghcr.io",
+        'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"',
+        "formatter-must-not-receive",
+        'state["lint_release"]["images"][name]',
     ):
         if required not in continuous_integration:
             raise ValueError(f"CI token-free fixture is missing: {required}")
@@ -333,6 +348,12 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("release signer allowlist must have one record")
     if len(allowed.rstrip("\n").split(" ")) != 3:
         raise ValueError("release signer allowlist has extra fields")
+    lint_allowed_path = ROOT / ".github" / "lint-release-allowed-signers"
+    lint_allowed = lint_allowed_path.read_text(encoding="utf-8")
+    if allowed_pattern.fullmatch(lint_allowed) is None:
+        raise ValueError("lint release signer allowlist is invalid")
+    if sha256(lint_allowed_path) != LINT_ALLOWED_SIGNERS_SHA256:
+        raise ValueError("lint release signer allowlist checksum is wrong")
 
 
 def verify_action_boundary() -> None:

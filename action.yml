@@ -1,7 +1,7 @@
 name: "auto-lint-pr"
 description:
-  "Turn pinned formatter output into a reviewable pull
-  request"
+  "Turn signed, digest-pinned formatter output into a
+  reviewable pull request"
 inputs:
   phase:
     description:

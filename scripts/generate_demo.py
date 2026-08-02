@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -200,11 +201,28 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
         for name in TOKEN_NAMES:
             previous[name] = os.environ.get(name)
             os.environ[name] = "demo-write-token"
+        verified_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+        verified_manifest["verified_dependency"] = {
+            "commit": lint_commit,
+            "dependency_sha256": "1" * 64,
+            "images": {
+                "ghcr.io/trycopilotai/lint-requirements": "sha256:" + "2" * 64,
+            },
+            "manifest_sha256": sha256(manifest),
+            "tag_object": "3" * 40,
+            "tree": git(lint_root, "rev-parse", "HEAD^{tree}"),
+        }
         try:
+            with mock.patch.object(
+                AUTO_LINT_PR,
+                "verify_lint_release",
+                return_value=verified_manifest,
+            ):
+                state = AUTO_LINT_PR.run_prepare(arguments)
             return {
                 "input_commit": consumer_commit,
                 "lint_commit": lint_commit,
-                "state": AUTO_LINT_PR.run_prepare(arguments),
+                "state": state,
             }
         finally:
             for name, value in previous.items():

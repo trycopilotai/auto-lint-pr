@@ -236,14 +236,31 @@ class WorkflowMetadataTest(unittest.TestCase):
         )
         self.assertNotIn("uses: trycopilotai/lint@", text)
 
-    def test_consumer_workflows_pin_the_same_lint_commit(self) -> None:
-        manifest = json.loads(
-            (ROOT / "lint-release-manifest.json").read_text(encoding="utf-8")
+    def test_consumer_workflows_pin_the_same_lint_ref(self) -> None:
+        dependency = json.loads(
+            (ROOT / "lint-dependency.json").read_text(encoding="utf-8")
         )
-        commit = manifest["source"]["commit"]
+        ref = dependency["ref"]
         for name in ("auto-lint-pr.yml", "ci.yml"):
             workflow = ROOT / ".github" / "workflows" / name
-            self.assertIn(commit, workflow.read_text(encoding="utf-8"))
+            self.assertIn(ref, workflow.read_text(encoding="utf-8"))
+
+    def test_ci_prefetches_then_runs_token_free_exact_digest(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("pinned-lint-docker:", workflow)
+        self.assertIn("Authenticated exact-digest prefetch", workflow)
+        self.assertIn('docker pull "$image"', workflow)
+        self.assertIn("docker logout ghcr.io", workflow)
+        self.assertIn(
+            'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"',
+            workflow,
+        )
+        self.assertIn("formatter-must-not-receive", workflow)
+        self.assertIn('state["lint_release"]["images"][name]', workflow)
+        self.assertNotIn("lint-requirements:v", workflow)
 
     def test_external_actions_use_commit_references(self) -> None:
         pattern = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")

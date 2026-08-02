@@ -82,7 +82,10 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: trycopilotai/lint
-          ref: d095640206c8f39cd968f81ce2e4bbcf8b03a0db
+          ref: refs/tags/v0.1.5
+          fetch-depth: 0
+          token:
+            "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: lint
       - name: Exercise token-free prepare and verification
@@ -169,3 +172,100 @@ jobs:
           grep -F \
             "token-free verification receipt does not match" \
             "$RUNNER_TEMP/tampered-state.stderr"
+
+  pinned-lint-docker:
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          path: auto-lint-pr
+      - name: Check out pinned lint release
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: trycopilotai/lint
+          ref: refs/tags/v0.1.5
+          fetch-depth: 0
+          token:
+            "${{ secrets.checkout_token || github.token }}"
+          persist-credentials: false
+          path: lint
+      - name: Authenticated exact-digest prefetch
+        env:
+          PREFETCH_TOKEN:
+            "${{ secrets.checkout_token || github.token }}"
+        shell: bash
+        working-directory: auto-lint-pr
+        run: |
+          auth="$RUNNER_TEMP/docker-auth"
+          mkdir "$auth"
+          image="$(
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path("lint-release-manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          images = manifest["images"]
+          if manifest["schema_version"] != 1:
+              raise SystemExit("unsupported lint release manifest schema")
+          name = "ghcr.io/trycopilotai/lint-requirements"
+          print(f"{name}@{images[name]}")
+          PY
+          )"
+          printf '%s' "$PREFETCH_TOKEN" | \
+            DOCKER_CONFIG="$auth" docker login ghcr.io \
+              --username "${{ github.actor }}" \
+              --password-stdin
+          DOCKER_CONFIG="$auth" docker pull "$image"
+          DOCKER_CONFIG="$auth" docker logout ghcr.io
+          if grep -F 'ghcr.io' "$auth/config.json"; then
+            printf '%s\n' \
+              "registry credentials survived logout" >&2
+            exit 1
+          fi
+      - name: Exercise token-free default Docker transaction
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "formatter-must-not-receive"
+          ACTIONS_RUNTIME_TOKEN: "formatter-must-not-receive"
+          DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"
+          GH_TOKEN: "formatter-must-not-receive"
+          GITHUB_TOKEN: "formatter-must-not-receive"
+        shell: bash
+        working-directory: auto-lint-pr
+        run: |
+          mkdir "$DOCKER_CONFIG"
+          state="$RUNNER_TEMP/auto-lint-pr-docker-state.json"
+          hook="$RUNNER_TEMP/token-free-hook"
+          cat >"$hook" <<'SH'
+          test -z "${GITHUB_TOKEN+x}${GH_TOKEN+x}${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}${ACTIONS_RUNTIME_TOKEN+x}"
+          SH
+          python3 auto_lint_pr.py prepare \
+            --lint-root ../lint \
+            --cwd fixtures/integration \
+            --language requirements \
+            --hook "sh $hook" \
+            --state "$state"
+          diff -u \
+            fixtures/integration/expected.txt \
+            fixtures/integration/requirements.txt
+          python3 - "$state" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          state = json.loads(
+              Path(sys.argv[1]).read_text(encoding="utf-8")
+          )
+          name = "ghcr.io/trycopilotai/lint-requirements"
+          digest = state["lint_release"]["images"][name]
+          if not digest.startswith("sha256:"):
+              raise SystemExit("transaction did not bind the image digest")
+          PY

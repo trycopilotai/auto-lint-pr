@@ -16,6 +16,21 @@ hardening work and `consumer-integration` for non-sensitive
 consumer setup problems. The `good first issue` label never
 marks an unresolved vulnerability.
 
+## Dependency trust boundary
+
+The formatter checkout cannot nominate its own trust root.
+`lint-dependency.json` binds the expected annotated tag
+object, commit, tree, release-manifest checksum, and the
+checksum and principal of the controller-held
+allowed-signers file. Preparation verifies the operator
+signature, reproduces the source archive checksum from the
+signed tag, and validates the exact tool and language-image
+mappings before importing or running lint code.
+
+Docker formatting uses only the image names and SHA-256
+digests authenticated by that manifest. A version tag is not
+accepted as a runtime image reference.
+
 ## Supported versions
 
 Security fixes target the latest tagged release and the
