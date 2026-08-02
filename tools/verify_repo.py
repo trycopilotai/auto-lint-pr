@@ -82,6 +82,7 @@ def verify_required_paths() -> None:
         "lint-dependency.json",
         "lint-release-manifest.json",
         "skills/auto-lint-pr/SKILL.md",
+        "tools/verify_release.py",
     )
     for relative in required:
         if not (ROOT / relative).is_file():
@@ -260,6 +261,11 @@ def verify_actions(files: list[Path]) -> None:
         "gpg.format=ssh",
         "gpg.ssh.allowedSignersFile=.github/release-allowed-signers",
         'verify-tag "$RELEASE_REF"',
+        "release-commit:",
+        "needs.verify.outputs.release-commit",
+        'ref: "${{ needs.verify.outputs.release-commit }}"',
+        '"$RELEASE_COMMIT"',
+        "python3 tools/verify_release.py --ref",
     ):
         if required not in release:
             raise ValueError("release workflow does not verify the signed tag")

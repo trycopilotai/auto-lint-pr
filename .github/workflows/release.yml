@@ -22,6 +22,8 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      release-commit: "${{ steps.release.outputs.commit }}"
     steps:
       - name: Check out release source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -30,6 +32,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Verify signed release tag and exact commit
+        id: release
         shell: bash
         run: |
           test "${RELEASE_REF#v}" != "$RELEASE_REF"
@@ -40,12 +43,19 @@ jobs:
             verify-tag "$RELEASE_REF"
           test "$(git rev-list -n 1 "$RELEASE_REF")" = \
             "$(git rev-parse HEAD)"
+          printf 'commit=%s\n' \
+            "$(git rev-list -n 1 "$RELEASE_REF")" >> \
+            "$GITHUB_OUTPUT"
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13.14"
       - name: Verify repository
         run: make verify
+      - name: Verify release version closure
+        run: >-
+          python3 tools/verify_release.py --ref
+          "$RELEASE_REF"
       - name: Check Python formatting
         run: >-
           pipx run --spec black==24.10.0 black --check
@@ -67,11 +77,14 @@ jobs:
       contents: write
       id-token: write
     runs-on: ubuntu-latest
+    env:
+      RELEASE_COMMIT:
+        "${{ needs.verify.outputs.release-commit }}"
     steps:
       - name: Check out release source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: "${{ env.RELEASE_REF }}"
+          ref: "${{ needs.verify.outputs.release-commit }}"
           fetch-depth: 0
           persist-credentials: false
       - name: Read repository visibility
@@ -92,7 +105,7 @@ jobs:
           git archive \
             --format=tar \
             --prefix="auto-lint-pr-$version/" \
-            "$RELEASE_REF" |
+            "$RELEASE_COMMIT" |
             gzip -n >"dist/auto-lint-pr-$version.tar.gz"
           (
             cd dist
@@ -109,6 +122,17 @@ jobs:
         shell: bash
         run: |
           version="${RELEASE_REF#v}"
+          tag_object="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_REF" \
+              --jq '.object | select(.type == "tag") | .sha'
+          )"
+          tag_commit="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" \
+              --jq .object.sha
+          )"
+          test "$tag_commit" = "$RELEASE_COMMIT"
           draft="$(
             gh release view "$RELEASE_REF" \
               --json isDraft \
@@ -122,6 +146,7 @@ jobs:
           elif test "$draft" = ""; then
             gh release create "$RELEASE_REF" \
               --draft \
+              --target "$RELEASE_COMMIT" \
               --title "auto-lint-pr $version" \
               --notes \
               "Release artifacts for auto-lint-pr $version." \
