@@ -29,6 +29,20 @@ TOKEN_NAMES = (
 )
 
 
+def isolated_git_environment(
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in list(environment):
+        if name.startswith("GIT_"):
+            del environment[name]
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    if overrides is not None:
+        environment.update(overrides)
+    return environment
+
+
 def load_implementation():
     path = ROOT / "auto_lint_pr.py"
     specification = importlib.util.spec_from_file_location(
@@ -53,11 +67,12 @@ def git(
     *arguments: str,
     environment: dict[str, str] | None = None,
 ) -> str:
+    isolated_environment = isolated_git_environment(environment)
     completed = subprocess.run(
         ["git", *arguments],
         cwd=repository,
         check=True,
-        env=environment,
+        env=isolated_environment,
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -66,7 +81,14 @@ def git(
 
 def initialize_repository(repository: Path) -> None:
     repository.mkdir()
-    git(repository, "init", "-q", "-b", "main")
+    git(
+        repository,
+        "init",
+        "-q",
+        "-b",
+        "main",
+        "--object-format=sha1",
+    )
     git(repository, "config", "user.name", "Demo Author")
     git(
         repository,
@@ -78,9 +100,14 @@ def initialize_repository(repository: Path) -> None:
 
 def commit_all(repository: Path) -> str:
     git(repository, "add", "-A")
-    environment = dict(os.environ)
-    environment["GIT_AUTHOR_DATE"] = FIXTURE_DATE
-    environment["GIT_COMMITTER_DATE"] = FIXTURE_DATE
+    environment = {
+        "GIT_AUTHOR_DATE": FIXTURE_DATE,
+        "GIT_AUTHOR_EMAIL": "demo@example.invalid",
+        "GIT_AUTHOR_NAME": "Demo Author",
+        "GIT_COMMITTER_DATE": FIXTURE_DATE,
+        "GIT_COMMITTER_EMAIL": "demo@example.invalid",
+        "GIT_COMMITTER_NAME": "Demo Author",
+    }
     git(
         repository,
         "commit",

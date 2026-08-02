@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -128,6 +129,15 @@ class WorkflowMetadataTest(unittest.TestCase):
             text,
         )
         self.assertNotIn("uses: trycopilotai/lint@", text)
+
+    def test_consumer_workflows_pin_the_same_lint_commit(self) -> None:
+        manifest = json.loads(
+            (ROOT / "lint-release-manifest.json").read_text(encoding="utf-8")
+        )
+        commit = manifest["source"]["commit"]
+        for name in ("auto-lint-pr.yml", "ci.yml"):
+            workflow = ROOT / ".github" / "workflows" / name
+            self.assertIn(commit, workflow.read_text(encoding="utf-8"))
 
     def test_external_actions_use_commit_references(self) -> None:
         pattern = re.compile(r"uses:\s+([^@\s]+)@([^\s]+)")
@@ -274,6 +284,31 @@ class LaunchSurfaceTest(unittest.TestCase):
             manifest["skill"]["sha256"],
             run["protocol_sha256"],
         )
+
+    def test_demo_check_ignores_host_git_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "gitconfig"
+            config.write_text(
+                "[commit]\n\tgpgSign = true\n"
+                "[init]\n\tdefaultObjectFormat = sha256\n",
+                encoding="utf-8",
+            )
+            environment = dict(os.environ)
+            environment["GIT_AUTHOR_NAME"] = "Host Override"
+            environment["GIT_COMMITTER_NAME"] = "Host Override"
+            environment["GIT_CONFIG_GLOBAL"] = str(config)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "generate_demo.py"),
+                    "--check",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+            )
+
+        self.assertEqual(0, completed.returncode)
 
     def test_comparison_metric_and_article_are_present(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

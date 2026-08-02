@@ -208,9 +208,10 @@ def verify_actions(files: list[Path]) -> None:
                     f"action is not commit-pinned: {path}: " f"{match.group(1)}"
                 )
 
-    combined = "\n".join(path.read_text(encoding="utf-8") for path in workflows)
-    if LINT_COMMIT not in combined:
-        raise ValueError("workflows do not pin the lint release commit")
+    for name in ("auto-lint-pr.yml", "ci.yml"):
+        workflow = ROOT / ".github" / "workflows" / name
+        if LINT_COMMIT not in workflow.read_text(encoding="utf-8"):
+            raise ValueError(f"workflow does not pin the lint release commit: {name}")
     continuous_integration = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"
     )
