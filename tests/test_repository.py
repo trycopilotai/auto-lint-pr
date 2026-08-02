@@ -153,17 +153,18 @@ class InstallMetadataTest(unittest.TestCase):
 
 
 class LaunchSurfaceTest(unittest.TestCase):
-    def test_readme_has_icon_and_one_badge_per_workflow(self) -> None:
+    def test_readme_has_icon_and_runnable_workflow_badges(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
 
         self.assertIn('src="assets/icon.svg"', text)
         for workflow in (
-            "auto-lint-pr.yml",
             "ci.yml",
             "release.yml",
         ):
             badge = f"actions/workflows/{workflow}/badge.svg"
             self.assertEqual(1, text.count(badge))
+        reusable_badge = "actions/workflows/auto-lint-pr.yml/badge.svg"
+        self.assertNotIn(reusable_badge, text)
 
     def test_demo_is_transcript_derived_and_accessible(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

@@ -819,6 +819,10 @@ subprocess.run(["git", "commit", "-m", "hidden"], check=True)
             with self.assertRaises(AUTO_LINT_PR.SafetyError):
                 AUTO_LINT_PR.run_prepare(arguments)
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "requires POSIX executable mode semantics",
+    )
     def test_mode_mutation_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"
@@ -862,6 +866,10 @@ subprocess.run(["git", "commit", "-m", "hidden"], check=True)
         with self.assertRaises(AUTO_LINT_PR.SafetyError):
             AUTO_LINT_PR.validate_base_tree(base_tree, [record])
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "requires POSIX executable mode semantics",
+    )
     def test_prepare_rejects_executable_deletion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"
