@@ -3,6 +3,8 @@ from __future__ import annotations
 import html
 import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -133,12 +135,47 @@ class WorkflowMetadataTest(unittest.TestCase):
             workflow,
         )
         self.assertIn('verify-tag "$RELEASE_REF"', workflow)
+        self.assertIn("release-commit:", workflow)
+        self.assertIn("needs.verify.outputs.release-commit", workflow)
+        self.assertIn('ref: "${{ needs.verify.outputs.release-commit }}"', workflow)
+        self.assertIn('"$RELEASE_COMMIT"', workflow)
+        self.assertIn(
+            'python3 tools/verify_release.py --ref "$RELEASE_REF"',
+            workflow,
+        )
         self.assertRegex(
             allowed,
             r"^trycopilotai-release ssh-ed25519 " r"[A-Za-z0-9+/]+={0,2}\n$",
         )
         self.assertEqual(1, len(allowed.splitlines()))
         self.assertEqual(3, len(allowed.rstrip("\n").split(" ")))
+
+    def test_release_version_closure_matches_v010(self) -> None:
+        valid = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "verify_release.py"),
+                "--ref",
+                "v0.1.0",
+            ],
+            cwd=ROOT,
+            check=False,
+        )
+        invalid = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "verify_release.py"),
+                "--ref",
+                "v0.1.1",
+            ],
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(0, valid.returncode)
+        self.assertNotEqual(0, invalid.returncode)
 
 
 class InstallMetadataTest(unittest.TestCase):
