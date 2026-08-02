@@ -152,7 +152,9 @@ The called jobs check out this repository at
 `job.workflow_sha`, so the local composite action and the
 reusable workflow come from the same pinned commit. The
 formatter job cannot carry command-file or action-checkout
-changes into the fresh publisher job.
+changes into the fresh publisher job. These workflow
+identity fields are documented for GitHub Cloud and are not
+available on GitHub Enterprise Server.
 
 ## Comparison
 
@@ -176,8 +178,8 @@ for the other.
 
 - The action does not use `pull_request_target`.
 - Every checkout sets `persist-credentials: false`.
-- A private dependency checkout token never enters the
-  publication environment.
+- A private dependency checkout token is never persisted or
+  passed to the composite action or publication substep.
 - Formatting and the optional hook do not receive GitHub
   tokens, Actions runtime tokens, or runner command-file
   paths.

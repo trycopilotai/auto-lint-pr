@@ -5,11 +5,14 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tools import verify_repo  # noqa: E402
 
 
 class ActionMetadataTest(unittest.TestCase):
@@ -43,6 +46,23 @@ class ActionMetadataTest(unittest.TestCase):
         )
         for value in required:
             self.assertIn(value, text)
+
+
+class RepositoryPathTest(unittest.TestCase):
+    def test_windows_git_symlink_placeholder_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "skills" / "auto-lint-pr").mkdir(parents=True)
+            skill = root / "skill"
+            skill.write_text("skills/auto-lint-pr\n", encoding="utf-8")
+
+            verify_repo.verify_skill_entry(skill, "nt")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "skill must be a symbolic link",
+            ):
+                verify_repo.verify_skill_entry(skill, "posix")
 
 
 class WorkflowMetadataTest(unittest.TestCase):

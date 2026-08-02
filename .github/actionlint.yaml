@@ -1,8 +1,9 @@
 paths:
   .github/workflows/auto-lint-pr.yml:
     ignore:
-      # actionlint 1.7.12 predates GitHub's documented
-      # reusable-workflow identity fields on `job`.
+      # GitHub Cloud documents these reusable-workflow job
+      # identity fields in its Actions context reference.
+      # actionlint 1.7.12 does not model them yet.
       - 'property "workflow_repository" is not defined in
         object type'
       - 'property "workflow_sha" is not defined in object

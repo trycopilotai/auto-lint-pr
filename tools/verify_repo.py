@@ -7,6 +7,7 @@ import ast
 import hashlib
 import html
 import json
+import os
 import re
 import struct
 import subprocess
@@ -24,6 +25,20 @@ LINT_MANIFEST = "lint-release-manifest.json"
 LINT_REF = "refs/tags/v0.1.5"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
 LINT_TAG_OBJECT = "a2630d45e0762e5b87d0474648803cdf9dd6bf42"
+
+
+def verify_skill_entry(skill: Path, platform_name: str) -> None:
+    expected_target = "skills/auto-lint-pr"
+    expected = (skill.parent / expected_target).resolve()
+    if skill.is_symlink():
+        if skill.resolve() != expected:
+            raise ValueError("skill symbolic link has the wrong target")
+        return
+    if platform_name == "nt" and skill.is_file():
+        target = skill.read_text(encoding="utf-8").strip()
+        if target == expected_target:
+            return
+    raise ValueError("skill must be a symbolic link")
 
 
 def repository_files() -> list[Path]:
@@ -88,12 +103,7 @@ def verify_required_paths() -> None:
         if not (ROOT / relative).is_file():
             raise ValueError(f"required file is missing: {relative}")
 
-    skill = ROOT / "skill"
-    if not skill.is_symlink():
-        raise ValueError("skill must be a symbolic link")
-    expected = (ROOT / "skills" / "auto-lint-pr").resolve()
-    if skill.resolve() != expected:
-        raise ValueError("skill symbolic link has the wrong target")
+    verify_skill_entry(ROOT / "skill", os.name)
 
 
 def verify_python(files: list[Path]) -> None:
