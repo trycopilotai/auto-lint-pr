@@ -2,7 +2,7 @@
 set -eu
 
 repository="$(
-  CDPATH= cd -- "$(dirname -- "$0")/.." && pwd
+  CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd
 )"
 
 python3 "$repository/scripts/generate_demo.py" --check
