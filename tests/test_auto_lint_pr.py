@@ -150,6 +150,22 @@ def prepare_arguments(
     return AUTO_LINT_PR.parser().parse_args(values)
 
 
+def write_default_verification_receipt(
+    repository: Path,
+    state: Path,
+) -> dict[str, object]:
+    arguments = AUTO_LINT_PR.parser().parse_args(
+        [
+            "verify",
+            "--cwd",
+            str(repository),
+            "--state",
+            str(state),
+        ]
+    )
+    return AUTO_LINT_PR.run_verify(arguments)
+
+
 class CommandTest(unittest.TestCase):
     def test_lint_release_schema_two_is_supported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -353,8 +369,10 @@ class BranchSafetyTest(unittest.TestCase):
     def test_bot_email_without_a_valid_signature_is_rejected(self) -> None:
         unsigned = {
             "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.BOT_LOGIN},
             "commit": {
                 "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.BOT_EMAIL},
                 "verification": {"verified": False},
             },
             "github_signature": {
@@ -384,8 +402,10 @@ class BranchSafetyTest(unittest.TestCase):
     ) -> None:
         bot = {
             "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.BOT_LOGIN},
             "commit": {
                 "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.BOT_EMAIL},
                 "verification": {"verified": True},
             },
             "github_signature": {
@@ -400,12 +420,88 @@ class BranchSafetyTest(unittest.TestCase):
         signed_by_human["github_signature"]["wasSignedByGitHub"] = False
         human = json.loads(json.dumps(bot))
         human["author"]["login"] = "human"
+        human_committer = json.loads(json.dumps(bot))
+        human_committer["committer"]["login"] = "human"
+        spoofed_committer = json.loads(json.dumps(bot))
+        spoofed_committer["commit"]["committer"]["email"] = "human@example.invalid"
 
         AUTO_LINT_PR.validate_branch_commits([bot])
-        for commits in ([unsigned], [signed_by_human], [bot, human]):
+        for commits in (
+            [unsigned],
+            [signed_by_human],
+            [bot, human],
+            [human_committer],
+            [spoofed_committer],
+        ):
             with self.subTest(commits=commits):
                 with self.assertRaises(AUTO_LINT_PR.SafetyError):
                     AUTO_LINT_PR.validate_branch_commits(commits)
+
+    def test_branch_commits_require_exact_base_ancestry(self) -> None:
+        base = "a" * 40
+        tip = "b" * 40
+        commit = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "verification": {"verified": True},
+            },
+            "sha": tip,
+        }
+        response = {
+            "commits": [commit],
+            "merge_base_commit": {"sha": base},
+            "status": "ahead",
+            "total_commits": 1,
+        }
+        signature = {
+            "isValid": True,
+            "wasSignedByGitHub": True,
+        }
+
+        with (
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "gh_api",
+                return_value=response,
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "github_commit_signature",
+                return_value=signature,
+            ),
+        ):
+            commits = AUTO_LINT_PR.branch_commits(
+                "owner/repository",
+                base,
+                tip,
+                {"GH_TOKEN": "token"},
+            )
+
+        self.assertEqual([tip], [record["sha"] for record in commits])
+
+        for status, merge_base in (
+            ("diverged", base),
+            ("ahead", "c" * 40),
+        ):
+            unsafe = dict(response)
+            unsafe["status"] = status
+            unsafe["merge_base_commit"] = {"sha": merge_base}
+            with self.subTest(status=status, merge_base=merge_base):
+                with mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    return_value=unsafe,
+                ):
+                    with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                        AUTO_LINT_PR.branch_commits(
+                            "owner/repository",
+                            base,
+                            tip,
+                            {"GH_TOKEN": "token"},
+                        )
 
     def test_signature_query_is_bound_to_repository_and_commit(
         self,
@@ -1064,8 +1160,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
         }
         metadata = {
             "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.BOT_LOGIN},
             "commit": {
                 "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.BOT_EMAIL},
                 "verification": {"verified": True},
             },
             "sha": oid,
@@ -1130,6 +1228,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
@@ -1144,6 +1243,46 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
             self.assertFalse(result["changed"])
             self.assertIsNone(result["pull_request"])
+
+    def test_publish_requires_token_free_verification_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            (repository / "sample.txt").write_text(
+                "formatted\n",
+                encoding="utf-8",
+            )
+            head = commit_all(repository)
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": False,
+                        "cwd": str(repository),
+                        "delta": [],
+                        "lint_commit": "pinned",
+                        "repository": "owner/repository",
+                        "schema": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                ]
+            )
+
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "verification receipt",
+            ):
+                AUTO_LINT_PR.run_publish(arguments)
 
     def test_publish_existing_exact_delta_retries_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1171,6 +1310,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
@@ -1310,6 +1450,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
@@ -1404,6 +1545,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
@@ -1487,6 +1629,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
@@ -1590,6 +1733,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
@@ -1708,6 +1852,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ),
                 encoding="utf-8",
             )
+            write_default_verification_receipt(repository, state_path)
             arguments = AUTO_LINT_PR.parser().parse_args(
                 [
                     "publish",
