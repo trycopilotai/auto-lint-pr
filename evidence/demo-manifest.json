@@ -5,11 +5,11 @@
   },
   "generator": {
     "path": "scripts/generate_demo.py",
-    "sha256": "4c4bfdd0ac6ce1604ed64658ac4890931d2a1817669667d6102f69ea45164b3e"
+    "sha256": "86b0c36eeb41d9b9415c2764071e238a44e476cf5f5721ad8c86db08dc013551"
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "9e04e748abaf7aa2cd928c268741ad651cea18b7e290c5346fae20d70ec8e568"
+    "sha256": "3b56781d94319d04c669d956dcbfc8b6e901ba39dce0282f8cbc3e2310c7d73c"
   },
   "invocation": {
     "path": "scripts/demo.sh",
