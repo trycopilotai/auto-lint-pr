@@ -571,65 +571,6 @@ class BranchSafetyTest(unittest.TestCase):
                 prepared,
             )
 
-    def test_existing_branch_promotion_is_fast_forward_and_verified(self) -> None:
-        with (
-            mock.patch.object(
-                AUTO_LINT_PR,
-                "remote_tip",
-                side_effect=["expected", "published"],
-            ),
-            mock.patch.object(AUTO_LINT_PR, "gh_api") as api,
-        ):
-            AUTO_LINT_PR.advance_remote_branch(
-                "owner/repository",
-                "auto-lint/main",
-                "expected",
-                "published",
-                {"GH_TOKEN": "token"},
-            )
-
-        arguments = api.call_args.args[0]
-        self.assertIn("repos/owner/repository/git/refs/heads/auto-lint/main", arguments)
-        self.assertIn("sha=published", arguments)
-        self.assertIn("force=false", arguments)
-
-    def test_branch_deletion_requires_and_verifies_the_exact_tip(self) -> None:
-        environment = {"GH_TOKEN": "token"}
-        with (
-            mock.patch.object(
-                AUTO_LINT_PR,
-                "remote_tip",
-                return_value="different",
-            ),
-            mock.patch.object(AUTO_LINT_PR, "gh_api") as api,
-        ):
-            with self.assertRaises(AUTO_LINT_PR.SafetyError):
-                AUTO_LINT_PR.delete_remote_branch(
-                    "owner/repository",
-                    "auto-lint/main",
-                    "expected",
-                    environment,
-                )
-
-        api.assert_not_called()
-        with (
-            mock.patch.object(
-                AUTO_LINT_PR,
-                "remote_tip",
-                side_effect=["expected", None],
-            ),
-            mock.patch.object(AUTO_LINT_PR, "gh_api") as api,
-        ):
-            AUTO_LINT_PR.delete_remote_branch(
-                "owner/repository",
-                "auto-lint/main",
-                "expected",
-                environment,
-            )
-
-        self.assertIn("--method", api.call_args.args[0])
-        self.assertIn("DELETE", api.call_args.args[0])
-
 
 class TransactionTest(unittest.TestCase):
     def test_prepare_formats_with_credentials_removed(self) -> None:
@@ -1708,18 +1649,104 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     "gh_api",
                     return_value={"unexpected": True},
                 ),
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "delete_remote_branch",
-                ) as delete_branch,
             ):
                 result = AUTO_LINT_PR.run_publish(arguments)
 
             self.assertEqual(17, result["pull_request"])
             self.assertEqual(2, open_pulls.call_count)
-            delete_branch.assert_not_called()
 
-    def test_publish_cleans_exact_tip_after_definite_pr_rejection(self) -> None:
+    def test_publish_recovers_an_exact_bot_owned_branch_without_a_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8")
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": True,
+                        "cwd": str(repository),
+                        "delta": AUTO_LINT_PR.delta_records(repository),
+                        "lint_commit": "pinned",
+                        "repository": "owner/repository",
+                        "schema": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            write_default_verification_receipt(repository, state_path)
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            branch_tip = "signed-commit"
+            pull_request = {
+                "base": {"ref": "main"},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                    "sha": branch_tip,
+                },
+                "number": 17,
+            }
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            branch_tree = {"sample.txt": blob_record(b"after\n")}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, branch_tip],
+                ),
+                mock.patch.object(AUTO_LINT_PR, "branch_commits") as commits,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, branch_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_remote_branch",
+                ) as create_branch,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                ) as create_commit,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    return_value=pull_request,
+                ),
+            ):
+                result = AUTO_LINT_PR.run_publish(arguments)
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(17, result["pull_request"])
+            commits.assert_called_once()
+            create_branch.assert_not_called()
+            create_commit.assert_not_called()
+
+    def test_publish_retains_branch_after_definite_pr_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"
             initialize_repository(repository)
@@ -1789,23 +1816,12 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     "gh_api",
                     return_value={"unexpected": True},
                 ),
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "delete_remote_branch",
-                ) as delete_branch,
             ):
                 with self.assertRaisesRegex(
                     AUTO_LINT_PR.SafetyError,
-                    "no base record",
+                    "branch retained",
                 ):
                     AUTO_LINT_PR.run_publish(arguments)
-
-            delete_branch.assert_called_once_with(
-                "owner/repository",
-                "auto-lint/main",
-                "signed-commit",
-                {"GH_TOKEN": "token"},
-            )
 
     def test_publish_retains_branch_after_ambiguous_pr_request(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1877,10 +1893,6 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     "gh_api",
                     side_effect=AUTO_LINT_PR.CommandError("request failed"),
                 ),
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "delete_remote_branch",
-                ) as delete_branch,
             ):
                 with self.assertRaisesRegex(
                     AUTO_LINT_PR.SafetyError,
@@ -1888,9 +1900,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ):
                     AUTO_LINT_PR.run_publish(arguments)
 
-            delete_branch.assert_not_called()
-
-    def test_publish_cleans_new_branch_when_remote_tree_differs(
+    def test_publish_retains_new_branch_when_remote_tree_differs(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1960,22 +1970,11 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     return_value=("signed-commit", {"isValid": True}),
                 ),
                 mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "delete_remote_branch",
-                ) as delete_branch,
             ):
                 with self.assertRaises(AUTO_LINT_PR.SafetyError):
                     AUTO_LINT_PR.run_publish(arguments)
 
-            delete_branch.assert_called_once_with(
-                "owner/repository",
-                "auto-lint/main",
-                "signed-commit",
-                {"GH_TOKEN": "token"},
-            )
-
-    def test_publish_cleans_staging_without_moving_existing_branch_on_failure(
+    def test_publish_retains_existing_branch_after_commit_verification_failure(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2025,11 +2024,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             base_tree = {"sample.txt": blob_record(b"before\n")}
             branch_tree = {"sample.txt": blob_record(b"stale\n")}
             wrong_tree = {"sample.txt": blob_record(b"wrong\n")}
-            staging_branch = AUTO_LINT_PR.staging_branch_name(
-                "auto-lint/main",
-                branch_tip,
-                AUTO_LINT_PR.delta_records(repository),
-            )
+            delta = AUTO_LINT_PR.delta_records(repository)
             with (
                 mock.patch.object(
                     AUTO_LINT_PR,
@@ -2044,7 +2039,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, branch_tip, None, "signed-commit"],
+                    side_effect=[head, branch_tip],
                 ),
                 mock.patch.object(AUTO_LINT_PR, "branch_commits"),
                 mock.patch.object(
@@ -2056,30 +2051,22 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     AUTO_LINT_PR,
                     "create_signed_commit",
                     return_value=("signed-commit", {"isValid": True}),
-                ),
+                ) as create_commit,
                 mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
-                mock.patch.object(AUTO_LINT_PR, "create_remote_branch"),
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "advance_remote_branch",
-                ) as advance_branch,
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "delete_remote_branch",
-                ) as delete_branch,
             ):
                 with self.assertRaises(AUTO_LINT_PR.SafetyError):
                     AUTO_LINT_PR.run_publish(arguments)
 
-            advance_branch.assert_not_called()
-            delete_branch.assert_called_once_with(
+            create_commit.assert_called_once_with(
                 "owner/repository",
-                staging_branch,
-                "signed-commit",
+                "auto-lint/main",
+                branch_tip,
+                delta,
+                "Apply automated formatting",
                 {"GH_TOKEN": "token"},
             )
 
-    def test_publish_promotes_verified_staging_commit_to_existing_branch(
+    def test_publish_updates_existing_branch_with_expected_head_commit(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2132,11 +2119,6 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             base_tree = {"sample.txt": blob_record(b"before\n")}
             branch_tree = {"sample.txt": blob_record(b"stale\n")}
             published_tree = {"sample.txt": blob_record(b"after\n")}
-            staging_branch = AUTO_LINT_PR.staging_branch_name(
-                "auto-lint/main",
-                branch_tip,
-                delta,
-            )
             with (
                 mock.patch.object(
                     AUTO_LINT_PR,
@@ -2151,7 +2133,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, branch_tip, None, "signed-commit"],
+                    side_effect=[head, branch_tip, "signed-commit"],
                 ),
                 mock.patch.object(AUTO_LINT_PR, "branch_commits"),
                 mock.patch.object(
@@ -2163,42 +2145,19 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     AUTO_LINT_PR,
                     "create_signed_commit",
                     return_value=("signed-commit", {"isValid": True}),
-                ),
+                ) as create_commit,
                 mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "create_remote_branch",
-                ) as create_branch,
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "advance_remote_branch",
-                ) as advance_branch,
-                mock.patch.object(
-                    AUTO_LINT_PR,
-                    "delete_remote_branch",
-                ) as delete_branch,
             ):
                 result = AUTO_LINT_PR.run_publish(arguments)
 
             self.assertTrue(result["changed"])
             self.assertEqual(4, result["pull_request"])
-            create_branch.assert_called_once_with(
-                "owner/repository",
-                staging_branch,
-                branch_tip,
-                {"GH_TOKEN": "token"},
-            )
-            advance_branch.assert_called_once_with(
+            create_commit.assert_called_once_with(
                 "owner/repository",
                 "auto-lint/main",
                 branch_tip,
-                "signed-commit",
-                {"GH_TOKEN": "token"},
-            )
-            delete_branch.assert_called_once_with(
-                "owner/repository",
-                staging_branch,
-                "signed-commit",
+                delta,
+                "Apply automated formatting",
                 {"GH_TOKEN": "token"},
             )
 
