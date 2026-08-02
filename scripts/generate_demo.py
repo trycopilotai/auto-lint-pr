@@ -212,11 +212,22 @@ cwd = Path(arguments[arguments.index("--cwd") + 1])
             "tag_object": "3" * 40,
             "tree": git(lint_root, "rev-parse", "HEAD^{tree}"),
         }
+
+        def verify_fixture(*values):
+            verified_root = values[4]
+            AUTO_LINT_PR.materialize_git_tree(
+                lint_root,
+                lint_commit,
+                verified_root,
+                AUTO_LINT_PR.dependency_git_environment(os.environ),
+            )
+            return verified_manifest
+
         try:
             with mock.patch.object(
                 AUTO_LINT_PR,
                 "verify_lint_release",
-                return_value=verified_manifest,
+                side_effect=verify_fixture,
             ):
                 state = AUTO_LINT_PR.run_prepare(arguments)
             return {

@@ -128,6 +128,7 @@ jobs:
           ACTIONS_RUNTIME_TOKEN: ""
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
+          LINT_LANGUAGES: "${{ inputs.languages }}"
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/docker-clean"
@@ -140,7 +141,7 @@ jobs:
               dependencies/auto-lint-pr/lint-dependency.json \
             --allowed-signers \
               dependencies/auto-lint-pr/.github/lint-release-allowed-signers \
-            --languages "${{ inputs.languages }}" \
+            --languages "$LINT_LANGUAGES" \
             >"$RUNNER_TEMP/lint-image-references"
           test -s "$RUNNER_TEMP/lint-image-references"
       - name: Prefetch private images by exact digest
@@ -151,6 +152,13 @@ jobs:
             secrets.checkout_token || github.token }}"
         shell: bash
         run: |
+          registry_token=$REGISTRY_TOKEN
+          unset REGISTRY_TOKEN
+          docker_path=/usr/bin/docker
+          if ! test -x "$docker_path"; then
+            printf '%s\n' "trusted Docker CLI is unavailable" >&2
+            exit 1
+          fi
           auth="$RUNNER_TEMP/docker-auth"
           mkdir -m 700 "$auth"
           cleanup() {
@@ -160,14 +168,14 @@ jobs:
             fi
           }
           trap cleanup EXIT
-          printf '%s' "$REGISTRY_TOKEN" | \
-            DOCKER_CONFIG="$auth" docker login ghcr.io \
+          printf '%s' "$registry_token" | \
+            DOCKER_CONFIG="$auth" "$docker_path" login ghcr.io \
               --username "${{ github.actor }}" \
               --password-stdin
           while IFS= read -r image; do
-            DOCKER_CONFIG="$auth" docker pull "$image"
+            DOCKER_CONFIG="$auth" "$docker_path" pull "$image"
           done <"$RUNNER_TEMP/lint-image-references"
-          DOCKER_CONFIG="$auth" docker logout ghcr.io
+          DOCKER_CONFIG="$auth" "$docker_path" logout ghcr.io
           if grep -F -q 'ghcr.io' "$auth/config.json"; then
             printf '%s\n' \
               "registry credentials survived logout" >&2

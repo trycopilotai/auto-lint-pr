@@ -417,6 +417,31 @@ class DependencyTrustTest(unittest.TestCase):
             self.assertTrue(resolved.is_absolute())
             self.assertNotEqual(hostile.resolve(), resolved)
 
+    def test_git_is_not_resolved_from_hostile_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lint_root = root / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            marker = root / "hostile-git-ran"
+            hostile = root / "git"
+            hostile.write_text(
+                f"#!/bin/sh\n: > {shlex.quote(str(marker))}\nexit 97\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            hostile.chmod(0o755)
+
+            with mock.patch.dict(os.environ, {"PATH": directory}, clear=False):
+                verified = AUTO_LINT_PR.verify_lint_release(
+                    lint_root,
+                    manifest_path,
+                    manifest_path.parent / "lint-dependency.json",
+                    manifest_path.parent / "lint-release-allowed-signers",
+                )
+
+            self.assertEqual("0.1.0", verified["release"])
+            self.assertFalse(marker.exists())
+
     def test_index_flags_cannot_hide_changed_lint_bytes(self) -> None:
         for flag in ("--assume-unchanged", "--skip-worktree"):
             with self.subTest(flag=flag):
@@ -652,6 +677,42 @@ class IsolationTest(unittest.TestCase):
         self.assertNotIn("GITHUB_OUTPUT", isolated)
         self.assertNotIn("GITHUB_PATH", isolated)
         self.assertNotIn("PYTHONPATH", isolated)
+
+    def test_github_cli_is_resolved_before_token_injection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            hostile = Path(directory) / "gh"
+            hostile.write_text(
+                "#!/bin/sh\nexit 97\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            hostile.chmod(0o755)
+            environment = {
+                "GH_TOKEN": "publication-secret",
+                "PATH": directory,
+            }
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="{}\n",
+                stderr="",
+            )
+
+            with mock.patch.dict(os.environ, environment, clear=True):
+                authenticated = AUTO_LINT_PR.require_token()
+                with mock.patch.object(
+                    AUTO_LINT_PR.subprocess,
+                    "run",
+                    return_value=completed,
+                ) as run:
+                    AUTO_LINT_PR.gh_api(["user"], authenticated)
+
+            command = run.call_args.args[0]
+            self.assertTrue(Path(command[0]).is_absolute())
+            self.assertNotEqual(hostile.resolve(), Path(command[0]))
+            self.assertEqual(
+                "publication-secret", run.call_args.kwargs["env"]["GH_TOKEN"]
+            )
 
 
 class BranchSafetyTest(unittest.TestCase):
@@ -1106,10 +1167,57 @@ class TransactionTest(unittest.TestCase):
                 "verify_lint_release",
                 side_effect=verify_then_replace,
             ):
-                result = AUTO_LINT_PR.run_prepare(arguments)
+                with mock.patch.object(
+                    AUTO_LINT_PR,
+                    "materialize_git_tree",
+                    wraps=AUTO_LINT_PR.materialize_git_tree,
+                ) as materialize:
+                    result = AUTO_LINT_PR.run_prepare(arguments)
 
             self.assertTrue(result["changed"])
             self.assertEqual("formatted\n", sample.read_text(encoding="utf-8"))
+            self.assertEqual(1, materialize.call_count)
+
+    def test_consumer_git_redirection_cannot_escape_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            initialize_repository(workspace)
+            nested = workspace / "nested"
+            nested.mkdir()
+            outside = root / "outside"
+            initialize_repository(outside)
+            hostile = {
+                "GIT_DIR": str(outside / ".git"),
+                "GIT_WORK_TREE": str(outside),
+            }
+
+            with mock.patch.dict(os.environ, hostile, clear=False):
+                discovered = AUTO_LINT_PR.repository_root(nested, workspace)
+
+            self.assertEqual(workspace.resolve(), discovered)
+
+    def test_consumer_fsmonitor_helper_is_rejected_before_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            marker = Path(directory) / "fsmonitor-ran"
+            helper = Path(directory) / "fsmonitor"
+            helper.write_text(
+                f"#!/bin/sh\n: > {shlex.quote(str(marker))}\nexit 0\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            helper.chmod(0o755)
+            run_git(repository, "config", "core.fsmonitor", str(helper))
+
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "executable repository Git configuration",
+            ):
+                AUTO_LINT_PR.changed_paths(repository)
+
+            self.assertFalse(marker.exists())
 
     def test_no_change_prepare_records_false(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1430,6 +1538,10 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     shlex.quote(str(capture)),
                 ]
             )
+            sample.write_text("prepared\n", encoding="utf-8", newline="\n")
+            expected = AUTO_LINT_PR.delta_records(repository)
+            self.assertFalse(capture.exists())
+
             run_git(
                 repository,
                 "config",
@@ -1442,10 +1554,6 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 "filter.probe.required",
                 "true",
             )
-            sample.write_text("prepared\n", encoding="utf-8", newline="\n")
-            expected = AUTO_LINT_PR.delta_records(repository)
-            self.assertEqual("ABSENT", capture.read_text(encoding="utf-8"))
-            capture.unlink()
 
             with mock.patch.dict(
                 os.environ,
@@ -1650,6 +1758,53 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 AUTO_LINT_PR.restore_prepared_delta(repository, [record])
 
             self.assertFalse((Path(directory) / "outside.txt").exists())
+
+    def test_restore_does_not_follow_a_swapped_parent_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            nested = repository / "nested"
+            nested.mkdir()
+            (nested / "sample.txt").write_text(
+                "before\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            outside = root / "outside"
+            outside.mkdir()
+            outside_sample = outside / "sample.txt"
+            outside_sample.write_text(
+                "outside\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            saved = root / "saved-parent"
+            payload = b"prepared\n"
+            record = {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "nested/sample.txt",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            open_parent = AUTO_LINT_PR.open_prepared_parent
+
+            def open_then_swap(repository_path, relative):
+                parent, name = open_parent(repository_path, relative)
+                nested.rename(saved)
+                nested.symlink_to(outside, target_is_directory=True)
+                return parent, name
+
+            with mock.patch.object(
+                AUTO_LINT_PR,
+                "open_prepared_parent",
+                side_effect=open_then_swap,
+            ):
+                AUTO_LINT_PR.restore_prepared_delta(repository, [record])
+
+            self.assertEqual("outside\n", outside_sample.read_text(encoding="utf-8"))
+            self.assertEqual(payload, (saved / "sample.txt").read_bytes())
 
     def test_formatter_failure_stops_before_publish(self) -> None:
         with mock.patch.object(
@@ -1905,7 +2060,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             )
             branch_tip = "existing-tip"
             pull = {
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": head},
                 "head": {
                     "ref": "auto-lint/main",
                     "repo": {"full_name": "owner/repository"},
@@ -1930,7 +2085,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, branch_tip, head],
+                    side_effect=[head, branch_tip, head, head, branch_tip],
                 ),
                 mock.patch.object(AUTO_LINT_PR, "branch_commits"),
                 mock.patch.object(
@@ -2048,7 +2203,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             base_tree = {"sample.txt": blob_record(b"before\n")}
             published_tree = {"sample.txt": blob_record(b"after\n")}
             pull_request = {
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": head},
                 "head": {
                     "ref": "auto-lint/main",
                     "repo": {"full_name": "owner/repository"},
@@ -2065,12 +2220,19 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "open_pull_requests",
-                    return_value=[],
+                    side_effect=[[], [pull_request]],
                 ),
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, None, "signed-commit", head],
+                    side_effect=[
+                        head,
+                        None,
+                        "signed-commit",
+                        head,
+                        head,
+                        "signed-commit",
+                    ],
                 ),
                 mock.patch.object(
                     AUTO_LINT_PR,
@@ -2189,6 +2351,142 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
         api.assert_not_called()
 
+    def test_publish_rechecks_base_after_pull_request_reconciliation(self) -> None:
+        before = b"before\n"
+        after = b"after\n"
+        delta = [
+            {
+                "content": base64.b64encode(after).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "sample.txt",
+                "sha256": hashlib.sha256(after).hexdigest(),
+            }
+        ]
+        state = {
+            "base": "main",
+            "base_head": "prepared-head",
+            "branch": "auto-lint/main",
+            "changed": True,
+            "delta": delta,
+            "repository": "owner/repository",
+        }
+        arguments = AUTO_LINT_PR.parser().parse_args(
+            [
+                "publish",
+                "--state",
+                "/unused/state.json",
+                "--repository",
+                "owner/repository",
+            ]
+        )
+        base_tree = {"sample.txt": blob_record(before)}
+        published_tree = {"sample.txt": blob_record(after)}
+        pull_request = {
+            "base": {"ref": "main", "sha": "prepared-head"},
+            "head": {
+                "ref": "auto-lint/main",
+                "repo": {"full_name": "owner/repository"},
+                "sha": "signed-commit",
+            },
+            "number": 42,
+        }
+        with (
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "transaction_state",
+                return_value=state,
+            ),
+            mock.patch.object(AUTO_LINT_PR, "validate_transaction_binding"),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "transaction_repository",
+                return_value=Path("/unused/consumer"),
+            ),
+            mock.patch.object(AUTO_LINT_PR, "verify_transaction_checkout"),
+            mock.patch.object(AUTO_LINT_PR, "verify_prior_receipt"),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "require_token",
+                return_value={"GH_TOKEN": "token"},
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "remote_tip",
+                side_effect=[
+                    "prepared-head",
+                    None,
+                    "signed-commit",
+                    "prepared-head",
+                    "advanced-after-pr",
+                ],
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "remote_tree",
+                side_effect=[base_tree, published_tree],
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "open_pull_requests",
+                return_value=[],
+            ),
+            mock.patch.object(AUTO_LINT_PR, "create_remote_branch"),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "create_signed_commit",
+                return_value=("signed-commit", {"isValid": True}),
+            ),
+            mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "gh_api",
+                return_value=pull_request,
+            ) as api,
+        ):
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "base branch changed",
+            ):
+                AUTO_LINT_PR.run_publish(arguments)
+
+        api.assert_called_once()
+
+    def test_publication_revalidation_rejects_existing_pr_ref_mutation(self) -> None:
+        pull_request = {
+            "base": {"ref": "main", "sha": "prepared-head"},
+            "head": {
+                "ref": "auto-lint/main",
+                "repo": {"full_name": "owner/repository"},
+                "sha": "advanced-head",
+            },
+            "number": 42,
+        }
+        with (
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "remote_tip",
+                side_effect=["prepared-head", "signed-commit"],
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "open_pull_requests",
+                return_value=[pull_request],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "head differs",
+            ):
+                AUTO_LINT_PR.revalidate_publication(
+                    "owner/repository",
+                    "main",
+                    "prepared-head",
+                    "auto-lint/main",
+                    "signed-commit",
+                    {"GH_TOKEN": "token"},
+                )
+
     def test_publish_reconciles_a_malformed_creation_response(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"
@@ -2227,7 +2525,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 ]
             )
             pull_request = {
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": head},
                 "head": {
                     "ref": "auto-lint/main",
                     "repo": {"full_name": "owner/repository"},
@@ -2246,12 +2544,19 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "open_pull_requests",
-                    side_effect=[[], [pull_request]],
+                    side_effect=[[], [pull_request], [pull_request]],
                 ) as open_pulls,
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, None, "signed-commit", head],
+                    side_effect=[
+                        head,
+                        None,
+                        "signed-commit",
+                        head,
+                        head,
+                        "signed-commit",
+                    ],
                 ),
                 mock.patch.object(
                     AUTO_LINT_PR,
@@ -2274,7 +2579,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 result = AUTO_LINT_PR.run_publish(arguments)
 
             self.assertEqual(17, result["pull_request"])
-            self.assertEqual(2, open_pulls.call_count)
+            self.assertEqual(3, open_pulls.call_count)
 
     def test_publish_recovers_an_exact_bot_owned_branch_without_a_pr(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2315,7 +2620,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             )
             branch_tip = "signed-commit"
             pull_request = {
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": head},
                 "head": {
                     "ref": "auto-lint/main",
                     "repo": {"full_name": "owner/repository"},
@@ -2334,12 +2639,12 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "open_pull_requests",
-                    return_value=[],
+                    side_effect=[[], [pull_request]],
                 ),
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, branch_tip, head],
+                    side_effect=[head, branch_tip, head, head, branch_tip],
                 ),
                 mock.patch.object(AUTO_LINT_PR, "branch_commits") as commits,
                 mock.patch.object(
@@ -2739,7 +3044,7 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             )
             branch_tip = "existing-tip"
             pull_before = {
-                "base": {"ref": "main"},
+                "base": {"ref": "main", "sha": head},
                 "head": {
                     "ref": "auto-lint/main",
                     "repo": {"full_name": "owner/repository"},
@@ -2761,12 +3066,19 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "open_pull_requests",
-                    side_effect=[[pull_before], [pull_after]],
+                    side_effect=[[pull_before], [pull_after], [pull_after]],
                 ),
                 mock.patch.object(
                     AUTO_LINT_PR,
                     "remote_tip",
-                    side_effect=[head, branch_tip, "signed-commit", head],
+                    side_effect=[
+                        head,
+                        branch_tip,
+                        "signed-commit",
+                        head,
+                        head,
+                        "signed-commit",
+                    ],
                 ),
                 mock.patch.object(AUTO_LINT_PR, "branch_commits"),
                 mock.patch.object(

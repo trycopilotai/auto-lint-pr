@@ -41,6 +41,13 @@ def action_cwd() -> str:
     return str(cwd)
 
 
+def action_workspace_root() -> str:
+    """Return the canonical boundary independently supplied to the CLI."""
+
+    boundary = Path(os.environ.get("INPUT_WORKSPACE_ROOT", ".")).resolve()
+    return str(boundary)
+
+
 def command(phase: str) -> list[str]:
     action_path = Path(os.environ["GITHUB_ACTION_PATH"])
     arguments = [
@@ -49,6 +56,8 @@ def command(phase: str) -> list[str]:
         phase,
         "--cwd",
         action_cwd(),
+        "--workspace-root",
+        action_workspace_root(),
         "--base",
         os.environ.get("INPUT_BASE", "main"),
         "--repository",

@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -115,6 +116,7 @@ def parser() -> argparse.ArgumentParser:
     )
     argument_parser.add_argument("paths", nargs="*")
     argument_parser.add_argument("--cwd")
+    argument_parser.add_argument("--workspace-root")
     argument_parser.add_argument("--lint-root")
     argument_parser.add_argument(
         "--manifest",
@@ -202,6 +204,54 @@ def dependency_git_environment(
     isolated["GIT_CONFIG_NOSYSTEM"] = "1"
     isolated["GIT_NO_REPLACE_OBJECTS"] = "1"
     return isolated
+
+
+def consumer_git_environment(
+    environment: Mapping[str, str],
+) -> dict[str, str]:
+    """Remove Git routing and executable configuration from consumer work."""
+
+    return dependency_git_environment(environment)
+
+
+def trusted_git() -> Path:
+    """Resolve Git from fixed host locations without consulting PATH."""
+
+    candidates = [
+        Path("/usr/bin/git"),
+        Path("/usr/local/bin/git"),
+        Path("C:/Program Files/Git/cmd/git.exe"),
+        Path("C:/Program Files/Git/bin/git.exe"),
+    ]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return resolved
+    raise CommandError("Git is required from a trusted host location")
+
+
+def trusted_gh() -> Path:
+    """Resolve GitHub CLI from fixed host locations without consulting PATH."""
+
+    candidates = [
+        Path("/usr/bin/gh"),
+        Path("/usr/local/bin/gh"),
+        Path("/opt/homebrew/bin/gh"),
+        Path("C:/Program Files/GitHub CLI/gh.exe"),
+    ]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return resolved
+    raise CommandError("GitHub CLI is required from a trusted host location")
 
 
 def trusted_ssh_keygen() -> Path:
@@ -584,7 +634,7 @@ def git_archive_payload(
 ) -> bytes:
     """Return the exact Git archive bytes for one immutable object."""
 
-    command = ["git", "archive", "--format=tar"]
+    command = [str(trusted_git()), "archive", "--format=tar"]
     if prefix is not None:
         command.append(f"--prefix={prefix}")
     command.append(object_name)
@@ -701,11 +751,11 @@ def materialize_git_tree(
                 os.symlink(member.linkname, target)
 
 
-def reject_executable_git_config(
+def executable_git_config_names(
     repository: Path,
     environment: Mapping[str, str],
-) -> None:
-    """Reject repository-local settings that can launch helper programs."""
+) -> list[str]:
+    """Return repository-local settings that can launch helper programs."""
 
     pattern = (
         r"^(core\.fsmonitor|gpg\..*program|"
@@ -714,7 +764,7 @@ def reject_executable_git_config(
     )
     completed = subprocess.run(
         [
-            "git",
+            str(trusted_git()),
             "config",
             "--local",
             "--includes",
@@ -730,17 +780,43 @@ def reject_executable_git_config(
         stderr=subprocess.PIPE,
     )
     if completed.returncode == 1 and completed.stdout == b"":
-        return
+        return []
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
         raise DependencyError(f"could not inspect lint Git configuration: {detail}")
-    names = sorted(
+    return sorted(
         value.decode("utf-8", errors="replace")
         for value in completed.stdout.split(b"\0")
         if value != b""
     )
+
+
+def reject_executable_git_config(
+    repository: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Reject executable configuration in the lint dependency checkout."""
+
+    names = executable_git_config_names(repository, environment)
+    if not names:
+        return
     raise DependencyError(
         "lint checkout has executable repository Git configuration: " + ", ".join(names)
+    )
+
+
+def reject_consumer_executable_git_config(
+    repository: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Reject executable configuration in a consumer checkout."""
+
+    names = executable_git_config_names(repository, environment)
+    if not names:
+        return
+    raise SafetyError(
+        "consumer checkout has executable repository Git configuration: "
+        + ", ".join(names)
     )
 
 
@@ -752,7 +828,7 @@ def git_tree_entries(
     """Return the exact recursive tree inventory for one commit."""
 
     completed = subprocess.run(
-        ["git", "ls-tree", "-rz", "--full-tree", commit],
+        [str(trusted_git()), "ls-tree", "-rz", "--full-tree", commit],
         cwd=repository,
         check=False,
         env=environment,
@@ -790,7 +866,7 @@ def git_blob_payload(
     """Read one exact blob without applying worktree filters."""
 
     completed = subprocess.run(
-        ["git", "cat-file", "blob", object_name],
+        [str(trusted_git()), "cat-file", "blob", object_name],
         cwd=repository,
         check=False,
         env=environment,
@@ -873,7 +949,7 @@ def git(
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
-        ["git", *arguments],
+        [str(trusted_git()), *arguments],
         cwd=repository,
         check=False,
         env=environment,
@@ -895,6 +971,7 @@ def verify_lint_release(
     manifest_path: Path,
     dependency_path: Path,
     allowed_signers_path: Path,
+    verified_root: Path | None = None,
 ) -> dict[str, Any]:
     if dependency_path.is_symlink() or not dependency_path.is_file():
         raise DependencyError("lint dependency ledger must be a regular file")
@@ -962,7 +1039,7 @@ def verify_lint_release(
         raise DependencyError("lint release tag does not point at the commit")
     verification = subprocess.run(
         [
-            "git",
+            str(trusted_git()),
             "-c",
             "gpg.format=ssh",
             "-c",
@@ -985,8 +1062,11 @@ def verify_lint_release(
     if dependency["signer"] not in signature_output:
         raise DependencyError("lint release signature principal does not match")
     verify_worktree_matches_commit(lint_root, dependency["commit"], isolated)
-    with tempfile.TemporaryDirectory(prefix="auto-lint-pr-verify-") as directory:
-        verified_root = Path(directory) / "lint"
+    temporary_directory: tempfile.TemporaryDirectory[str] | None = None
+    if verified_root is None:
+        temporary_directory = tempfile.TemporaryDirectory(prefix="auto-lint-pr-verify-")
+        verified_root = Path(temporary_directory.name) / "lint"
+    try:
         materialize_git_tree(
             lint_root,
             dependency["commit"],
@@ -998,6 +1078,9 @@ def verify_lint_release(
             verified_root,
             dependency,
         )
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
     release = manifest["release"]
     archive_sha = deterministic_archive_sha256(
         lint_root,
@@ -1018,18 +1101,31 @@ def verify_lint_release(
     return manifest
 
 
-def repository_root(cwd: Path) -> Path:
+def repository_root(
+    cwd: Path,
+    workspace_root: Path | None = None,
+) -> Path:
+    isolated = consumer_git_environment(os.environ)
     completed = git(
         cwd,
         "rev-parse",
         "--show-toplevel",
-        environment=token_free_environment(os.environ),
+        environment=isolated,
     )
-    return Path(completed.stdout.strip()).resolve()
+    repository = Path(completed.stdout.strip()).resolve()
+    if workspace_root is not None:
+        boundary = workspace_root.resolve()
+        if not cwd.resolve().is_relative_to(boundary):
+            raise SafetyError("working directory is outside the trusted workspace")
+        if not repository.is_relative_to(boundary):
+            raise SafetyError("repository root is outside the trusted workspace")
+    reject_consumer_executable_git_config(repository, isolated)
+    return repository
 
 
 def changed_paths(repository: Path) -> list[str]:
-    isolated = token_free_environment(os.environ)
+    isolated = consumer_git_environment(os.environ)
+    reject_consumer_executable_git_config(repository, isolated)
     tracked = git(
         repository,
         "diff",
@@ -1075,7 +1171,7 @@ def file_record(repository: Path, relative: str) -> dict[str, str]:
         record["sha256"] = hashlib.sha256(payload).hexdigest()
         return record
     if not path.exists():
-        isolated = token_free_environment(os.environ)
+        isolated = consumer_git_environment(os.environ)
         entry = git(
             repository,
             "ls-tree",
@@ -1185,24 +1281,90 @@ def prepared_relative_path(value: Any) -> PurePosixPath:
     return relative
 
 
-def safe_worktree_path(repository: Path, value: Any) -> Path:
-    """Resolve a prepared path without following a worktree symlink."""
+def open_prepared_parent(
+    repository: Path,
+    relative: PurePosixPath,
+) -> tuple[int, str]:
+    """Pin a prepared path's parent without following symbolic links."""
 
-    relative = prepared_relative_path(value)
-    current = repository.resolve()
-    for component in relative.parts[:-1]:
-        current = current / component
-        if current.exists() or current.is_symlink():
-            if current.is_symlink() or not current.is_dir():
-                raise SafetyError(f"prepared path has an unsafe parent: {value!r}")
-        else:
-            current.mkdir(mode=0o755)
-    target = current / relative.parts[-1]
-    if target.is_symlink():
-        raise SafetyError(f"prepared path is a symlink: {value!r}")
-    if not target.parent.resolve().is_relative_to(repository.resolve()):
-        raise SafetyError(f"prepared path escapes the repository: {value!r}")
-    return target
+    required = (os.open, os.mkdir, os.stat, os.unlink)
+    for operation in required:
+        if operation not in os.supports_dir_fd:
+            raise SafetyError("secure restoration requires directory file descriptors")
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    current = os.open(repository.resolve(), flags)
+    try:
+        for component in relative.parts[:-1]:
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o755, dir_fd=current)
+                child = os.open(component, flags, dir_fd=current)
+            except OSError as error:
+                raise SafetyError(
+                    f"prepared path has an unsafe parent: {relative.as_posix()!r}"
+                ) from error
+            os.close(current)
+            current = child
+        return current, relative.parts[-1]
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def prepared_target_stat(parent: int, name: str) -> os.stat_result | None:
+    """Inspect a destination without following its final symbolic link."""
+
+    try:
+        return os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def write_prepared_file(parent: int, name: str, payload: bytes) -> None:
+    """Atomically replace one file relative to a pinned directory."""
+
+    temporary_name = ".auto-lint-pr-" + secrets.token_hex(16)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary_name,
+            flags,
+            mode=0o600,
+            dir_fd=parent,
+        )
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise SafetyError("could not restore the complete prepared payload")
+            remaining = remaining[written:]
+        os.fchmod(descriptor, 0o644)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            name,
+            src_dir_fd=parent,
+            dst_dir_fd=parent,
+        )
+        temporary_name = ""
+        os.fsync(parent)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary_name != "":
+            try:
+                os.unlink(temporary_name, dir_fd=parent)
+            except FileNotFoundError:
+                pass
 
 
 def restore_prepared_delta(
@@ -1213,31 +1375,29 @@ def restore_prepared_delta(
 
     validate_prepared_modes(records)
     for record in records:
-        target = safe_worktree_path(repository, record.get("path"))
-        if record["kind"] == "deleted":
-            if not target.is_file() or target.is_symlink():
-                raise SafetyError(f"prepared deletion is not a regular file: {target}")
-            if target.stat().st_mode & 0o111:
-                raise SafetyError(f"prepared deletion changes an executable: {target}")
-            target.unlink()
-            continue
-        payload = prepared_payload(record)
-        if target.exists() and not target.is_file():
-            raise SafetyError(f"prepared destination is not a regular file: {target}")
-        temporary_name = ""
+        relative = prepared_relative_path(record.get("path"))
+        parent, name = open_prepared_parent(repository, relative)
         try:
-            with tempfile.NamedTemporaryFile(
-                dir=target.parent,
-                prefix=".auto-lint-pr-",
-                delete=False,
-            ) as handle:
-                handle.write(payload)
-                temporary_name = handle.name
-            os.chmod(temporary_name, 0o644)
-            os.replace(temporary_name, target)
+            target = prepared_target_stat(parent, name)
+            if record["kind"] == "deleted":
+                if target is None or not stat.S_ISREG(target.st_mode):
+                    raise SafetyError(
+                        f"prepared deletion is not a regular file: {relative}"
+                    )
+                if target.st_mode & 0o111:
+                    raise SafetyError(
+                        f"prepared deletion changes an executable: {relative}"
+                    )
+                os.unlink(name, dir_fd=parent)
+                os.fsync(parent)
+                continue
+            if target is not None and not stat.S_ISREG(target.st_mode):
+                raise SafetyError(
+                    f"prepared destination is not a regular file: {relative}"
+                )
+            write_prepared_file(parent, name, prepared_payload(record))
         finally:
-            if temporary_name != "" and Path(temporary_name).exists():
-                Path(temporary_name).unlink()
+            os.close(parent)
 
 
 def ensure_clean(repository: Path) -> None:
@@ -1285,12 +1445,15 @@ def run_checked(
 
 def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
     refuse_pull_request_target(os.environ)
-    isolated = token_free_environment(os.environ)
+    isolated = consumer_git_environment(os.environ)
     cwd_value = "."
     if arguments.cwd is not None:
         cwd_value = arguments.cwd
     cwd = Path(cwd_value).resolve()
-    repository = repository_root(cwd)
+    workspace_root = None
+    if arguments.workspace_root is not None:
+        workspace_root = Path(arguments.workspace_root)
+    repository = repository_root(cwd, workspace_root)
     ensure_clean(repository)
     base_head = git(
         repository,
@@ -1302,27 +1465,22 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         raise SafetyError("prepare requires --lint-root")
     lint_root = Path(arguments.lint_root).resolve()
     manifest_path = Path(arguments.manifest).resolve()
-    manifest = verify_lint_release(
-        lint_root,
-        manifest_path,
-        Path(arguments.dependency),
-        Path(arguments.allowed_signers),
-    )
-    runtime_manifest = dict(manifest)
-    release_binding = manifest.pop("verified_dependency")
-    runtime_manifest.pop("verified_dependency", None)
-    release_binding["images"] = selected_image_digests(
-        release_binding["images"],
-        arguments.language,
-    )
     with tempfile.TemporaryDirectory(prefix="auto-lint-pr-runtime-") as directory:
         runtime_directory = Path(directory)
         runtime_root = runtime_directory / "lint"
-        materialize_git_tree(
+        manifest = verify_lint_release(
             lint_root,
-            release_binding["commit"],
+            manifest_path,
+            Path(arguments.dependency),
+            Path(arguments.allowed_signers),
             runtime_root,
-            dependency_git_environment(os.environ),
+        )
+        runtime_manifest = dict(manifest)
+        release_binding = manifest.pop("verified_dependency")
+        runtime_manifest.pop("verified_dependency", None)
+        release_binding["images"] = selected_image_digests(
+            release_binding["images"],
+            arguments.language,
         )
         runtime_manifest_path = runtime_directory / "lint-release-manifest.json"
         write_canonical(runtime_manifest_path, runtime_manifest)
@@ -1468,7 +1626,10 @@ def transaction_repository(
     value = state["cwd"]
     if arguments.cwd is not None:
         value = arguments.cwd
-    return repository_root(Path(value).resolve())
+    workspace_root = None
+    if arguments.workspace_root is not None:
+        workspace_root = Path(arguments.workspace_root)
+    return repository_root(Path(value).resolve(), workspace_root)
 
 
 def validate_transaction_binding(
@@ -1497,7 +1658,7 @@ def verify_transaction_checkout(
 ) -> None:
     """Recreate and verify the exact prepared delta without credentials."""
 
-    isolated = token_free_environment(os.environ)
+    isolated = consumer_git_environment(os.environ)
     current_head = git(
         repository,
         "rev-parse",
@@ -1597,6 +1758,7 @@ def select_existing_pull_request(
 
 
 def require_token() -> dict[str, str]:
+    trusted_gh()
     token = os.environ.get("GH_TOKEN")
     if token is None or token == "":
         token = os.environ.get("GITHUB_TOKEN")
@@ -1619,7 +1781,7 @@ def gh_api(
     environment: Mapping[str, str],
     input_value: Any | None = None,
 ) -> Any:
-    command = ["gh", "api", *arguments]
+    command = [str(trusted_gh()), "api", *arguments]
     input_text = None
     if input_value is not None:
         command.extend(["--input", "-"])
@@ -1728,6 +1890,44 @@ def require_matching_pull_tip(
         raise SafetyError("existing pull request has no head record")
     if head.get("sha") != tip:
         raise SafetyError("existing pull request head differs from branch tip")
+
+
+def require_matching_pull_base(
+    pull_request: dict[str, Any],
+    base: str,
+) -> None:
+    base_record = pull_request.get("base")
+    if not isinstance(base_record, dict):
+        raise SafetyError("existing pull request has no base record")
+    if base_record.get("sha") != base:
+        raise SafetyError("existing pull request base differs from branch tip")
+
+
+def revalidate_publication(
+    repository_name: str,
+    base: str,
+    base_head: str,
+    branch: str,
+    branch_tip: str,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    """Re-read every mutable publication ref immediately before success."""
+
+    require_remote_base_tip(repository_name, base, base_head, environment)
+    actual_branch_tip = remote_tip(repository_name, branch, environment)
+    if actual_branch_tip != branch_tip:
+        raise SafetyError("auto-lint branch changed during publication")
+    pull_request = select_existing_pull_request(
+        open_pull_requests(repository_name, branch, environment),
+        base=base,
+        branch=branch,
+        repository_name=repository_name,
+    )
+    if pull_request is None:
+        raise SafetyError("published auto-lint branch has no open pull request")
+    require_matching_pull_tip(pull_request, branch_tip)
+    require_matching_pull_base(pull_request, base_head)
+    return pull_request
 
 
 def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
@@ -2294,6 +2494,19 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                         arguments.reviewer,
                         environment,
                     )
+                    pull_request = revalidate_publication(
+                        repository_name,
+                        state["base"],
+                        state["base_head"],
+                        branch,
+                        tip,
+                        environment,
+                    )
+                    number = pull_request.get("number")
+                    if not isinstance(number, int):
+                        raise CommandError(
+                            "pull request response is missing its number"
+                        )
                     result = {
                         "changed": False,
                         "pull_request": number,
@@ -2438,6 +2651,17 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         arguments.reviewer,
         environment,
     )
+    pull_request = revalidate_publication(
+        repository_name,
+        state["base"],
+        state["base_head"],
+        branch,
+        published_commit,
+        environment,
+    )
+    number = pull_request.get("number")
+    if not isinstance(number, int):
+        raise CommandError("pull request response is missing its number")
     result = {"changed": True, "pull_request": number, "schema": 1}
     write_action_output("changed", "true")
     write_action_output("pull-request", str(number))

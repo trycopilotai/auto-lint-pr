@@ -91,7 +91,7 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("secrets.registry_token", text)
         self.assertIn("packages: read", text)
         self.assertIn("Prefetch private images by exact digest", text)
-        self.assertIn("docker logout ghcr.io", text)
+        self.assertIn('"$docker_path" logout ghcr.io', text)
         self.assertIn("grep -F -q 'ghcr.io'", text)
         self.assertIn('DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"', text)
         self.assertIn("workspace-root: workspace", text)
@@ -134,6 +134,48 @@ class WorkflowMetadataTest(unittest.TestCase):
             "verification-sha",
         ):
             self.assertIn(output, publish)
+
+    def test_reusable_workflow_treats_languages_as_shell_data(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "auto-lint-pr.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('LINT_LANGUAGES: "${{ inputs.languages }}"', workflow)
+        self.assertIn('--languages "$LINT_LANGUAGES"', workflow)
+        self.assertNotIn('--languages "${{ inputs.languages }}"', workflow)
+        self.assertIn("docker_path=/usr/bin/docker", workflow)
+        self.assertIn("unset REGISTRY_TOKEN", workflow)
+        self.assertNotIn('DOCKER_CONFIG="$auth" docker ', workflow)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            github_path = root / "github-path"
+            arguments = root / "arguments"
+            payload = f'$(printf injected >>"{github_path}")'
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "ARGUMENT_LOG": str(arguments),
+                    "GITHUB_PATH": str(github_path),
+                    "LINT_LANGUAGES": payload,
+                }
+            )
+            subprocess.run(
+                [
+                    "/bin/bash",
+                    "-c",
+                    'set -- --languages "$LINT_LANGUAGES"; '
+                    'printf "%s\\0" "$@" >"$ARGUMENT_LOG"',
+                ],
+                check=True,
+                env=environment,
+            )
+
+            self.assertFalse(github_path.exists())
+            self.assertEqual(
+                [b"--languages", payload.encode("utf-8"), b""],
+                arguments.read_bytes().split(b"\0"),
+            )
 
     def test_consumer_base_bundle_is_complete_and_restorable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
