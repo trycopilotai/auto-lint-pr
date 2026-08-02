@@ -205,10 +205,16 @@ def verify_actions(files: list[Path]) -> None:
     )
     for required in (
         "python3 auto_lint_pr.py prepare",
+        "python3 ../verification-source/auto_lint_pr.py verify",
         "--lint-root ../lint",
         "--cwd fixtures/integration",
         "--language requirements",
         "--local",
+        "--restore",
+        "verification-source",
+        "auto-lint-pr-verified.json",
+        "state_sha256",
+        "token-free verification receipt",
         'GITHUB_TOKEN: ""',
         'GH_TOKEN: ""',
         '"fixtures/integration/requirements.txt"',

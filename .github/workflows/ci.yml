@@ -71,6 +71,11 @@ jobs:
         with:
           persist-credentials: false
           path: auto-lint-pr
+      - name: Check out fresh verification source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          path: verification-source
       - name: Check out pinned lint release
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -78,7 +83,7 @@ jobs:
           ref: d095640206c8f39cd968f81ce2e4bbcf8b03a0db
           persist-credentials: false
           path: lint
-      - name: Exercise token-free prepare transaction
+      - name: Exercise token-free prepare and verification
         working-directory: auto-lint-pr
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
@@ -88,6 +93,7 @@ jobs:
         shell: bash
         run: |
           state="$RUNNER_TEMP/auto-lint-pr-state.json"
+          verification="$RUNNER_TEMP/auto-lint-pr-verified.json"
           python3 auto_lint_pr.py prepare \
             --lint-root ../lint \
             --local \
@@ -114,3 +120,50 @@ jobs:
           if state["changed"] is not True:
               raise SystemExit("prepare did not report a change")
           PY
+          python3 ../verification-source/auto_lint_pr.py verify \
+            --base main \
+            --cwd ../verification-source/fixtures/integration \
+            --state "$state" \
+            --verification "$verification" \
+            --restore
+          diff -u \
+            ../verification-source/fixtures/integration/expected.txt \
+            ../verification-source/fixtures/integration/requirements.txt
+          test "$(git -C ../verification-source diff --name-only)" = \
+            "fixtures/integration/requirements.txt"
+          python3 - "$state" "$verification" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          state_path = Path(sys.argv[1])
+          receipt = json.loads(
+              Path(sys.argv[2]).read_text(encoding="utf-8")
+          )
+          expected_sha = hashlib.sha256(
+              state_path.read_bytes()
+          ).hexdigest()
+          expected_cwd = str(
+              (Path.cwd().parent / "verification-source").resolve()
+          )
+          if receipt["state_sha256"] != expected_sha:
+              raise SystemExit("verification receipt has the wrong state")
+          if receipt["cwd"] != expected_cwd:
+              raise SystemExit("verification receipt has the wrong checkout")
+          PY
+          tampered="$RUNNER_TEMP/auto-lint-pr-tampered.json"
+          cp "$state" "$tampered"
+          printf '\n' >>"$tampered"
+          if python3 ../verification-source/auto_lint_pr.py publish \
+            --base main \
+            --cwd ../verification-source/fixtures/integration \
+            --state "$tampered" \
+            --verification "$verification" \
+            2>"$RUNNER_TEMP/tampered-state.stderr"; then
+            printf '%s\n' "tampered state unexpectedly published" >&2
+            exit 1
+          fi
+          grep -F \
+            "token-free verification receipt does not match" \
+            "$RUNNER_TEMP/tampered-state.stderr"

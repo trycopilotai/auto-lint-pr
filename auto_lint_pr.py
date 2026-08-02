@@ -669,6 +669,24 @@ def transaction_repository(
     return repository_root(Path(value).resolve())
 
 
+def validate_transaction_binding(
+    arguments: argparse.Namespace,
+    state: dict[str, Any],
+) -> None:
+    """Bind untrusted state routing fields to trusted phase inputs."""
+
+    if state["base"] != arguments.base:
+        raise SafetyError("transaction state does not match the trusted base")
+    if arguments.repository is None:
+        return
+    trusted_repository = normalize_repository(arguments.repository)
+    state_repository = state.get("repository")
+    if state_repository is None:
+        return
+    if normalize_repository(state_repository) != trusted_repository:
+        raise SafetyError("transaction state does not match the trusted repository")
+
+
 def verify_transaction_checkout(
     repository: Path,
     state: dict[str, Any],
@@ -698,6 +716,7 @@ def run_verify(arguments: argparse.Namespace) -> dict[str, Any]:
     refuse_pull_request_target(os.environ)
     state_path = Path(arguments.state).resolve()
     state = transaction_state(state_path)
+    validate_transaction_binding(arguments, state)
     repository = transaction_repository(arguments, state)
     verify_transaction_checkout(
         repository,
@@ -1174,27 +1193,36 @@ def create_remote_branch(
 ) -> None:
     """Create the exact temporary publication branch."""
 
-    gh_api(
-        [
-            "--method",
-            "POST",
-            f"repos/{repository_name}/git/refs",
-            "-f",
-            f"ref=refs/heads/{branch}",
-            "-f",
-            f"sha={base}",
-        ],
-        environment,
-    )
+    try:
+        gh_api(
+            [
+                "--method",
+                "POST",
+                f"repos/{repository_name}/git/refs",
+                "-f",
+                f"ref=refs/heads/{branch}",
+                "-f",
+                f"sha={base}",
+            ],
+            environment,
+        )
+    except AutoLintError as error:
+        if remote_tip(repository_name, branch, environment) == base:
+            return
+        raise error
 
 
 def delete_remote_branch(
     repository_name: str,
     branch: str,
+    expected_tip: str,
     environment: Mapping[str, str],
 ) -> None:
-    """Delete only a just-created branch after mutation failure."""
+    """Delete a just-created branch only at its verified exact tip."""
 
+    actual_tip = remote_tip(repository_name, branch, environment)
+    if actual_tip != expected_tip:
+        raise SafetyError("cleanup branch changed before deletion")
     gh_api(
         [
             "--method",
@@ -1203,6 +1231,8 @@ def delete_remote_branch(
         ],
         environment,
     )
+    if remote_tip(repository_name, branch, environment) is not None:
+        raise SafetyError("cleanup branch still exists after deletion")
 
 
 def staging_branch_name(
@@ -1368,6 +1398,7 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
     refuse_pull_request_target(os.environ)
     state_path = Path(arguments.state).resolve()
     state = transaction_state(state_path)
+    validate_transaction_binding(arguments, state)
     repository = transaction_repository(arguments, state)
     verify_transaction_checkout(repository, state, restore=False)
     verify_prior_receipt(
@@ -1527,6 +1558,7 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
             delete_remote_branch(
                 repository_name,
                 staging_branch,
+                published_commit,
                 environment,
             )
             staging_branch = None
@@ -1535,10 +1567,14 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         if created_branch:
             cleanup_branch = branch
         if cleanup_branch is not None:
+            cleanup_tip = expected_head
+            if published_commit is not None:
+                cleanup_tip = published_commit
             try:
                 delete_remote_branch(
                     repository_name,
                     cleanup_branch,
+                    cleanup_tip,
                     environment,
                 )
             except AutoLintError as cleanup_error:
@@ -1562,8 +1598,9 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
         )
 
     if pull_request is None:
+        response_received = False
         try:
-            pull_request = gh_api(
+            response = gh_api(
                 [
                     "--method",
                     "POST",
@@ -1579,12 +1616,47 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                 ],
                 environment,
             )
+            response_received = True
+            if not isinstance(response, dict):
+                raise CommandError("pull request creation returned invalid data")
+            pull_request = select_existing_pull_request(
+                [response],
+                base=state["base"],
+                branch=branch,
+                repository_name=repository_name,
+            )
+            if pull_request is None:
+                raise CommandError("pull request creation returned no pull request")
+            require_matching_pull_tip(
+                pull_request,
+                published_commit,
+            )
         except AutoLintError as error:
-            if created_branch:
+            try:
+                pull_request = select_existing_pull_request(
+                    open_pull_requests(repository_name, branch, environment),
+                    base=state["base"],
+                    branch=branch,
+                    repository_name=repository_name,
+                )
+                if pull_request is not None:
+                    require_matching_pull_tip(
+                        pull_request,
+                        published_commit,
+                    )
+            except AutoLintError as reconciliation_error:
+                raise SafetyError(
+                    "pull request creation outcome is ambiguous; "
+                    "publication branch retained"
+                ) from reconciliation_error
+            if pull_request is not None:
+                pass
+            elif response_received:
                 try:
                     delete_remote_branch(
                         repository_name,
                         branch,
+                        published_commit,
                         environment,
                     )
                 except AutoLintError as cleanup_error:
@@ -1592,19 +1664,12 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                         "pull request creation failed and the new branch "
                         "cleanup also failed"
                     ) from cleanup_error
-            raise error
-        if not isinstance(pull_request, dict):
-            raise CommandError("pull request creation returned invalid data")
-        select_existing_pull_request(
-            [pull_request],
-            base=state["base"],
-            branch=branch,
-            repository_name=repository_name,
-        )
-        require_matching_pull_tip(
-            pull_request,
-            published_commit,
-        )
+                raise error
+            else:
+                raise SafetyError(
+                    "pull request creation outcome is ambiguous; "
+                    "publication branch retained"
+                ) from error
     number = pull_request.get("number")
     if not isinstance(number, int):
         raise CommandError("pull request response is missing its number")
