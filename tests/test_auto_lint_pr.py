@@ -349,6 +349,26 @@ class CommandTest(unittest.TestCase):
         self.assertIn("docs/a.md", command)
         self.assertNotIn("--all", command)
 
+    def test_files_from0_passes_through(self) -> None:
+        arguments = AUTO_LINT_PR.parser().parse_args(
+            [
+                "prepare",
+                "--lint-root",
+                "/lint",
+                "--files-from0",
+                "/selection/files",
+            ]
+        )
+
+        command = AUTO_LINT_PR.lint_command(arguments, Path("/manifest.json"))
+
+        self.assertEqual(
+            "/selection/files",
+            command[command.index("--files-from0") + 1],
+        )
+        self.assertNotIn("--all", command)
+        self.assertNotIn("--modified", command)
+
     def test_repository_name_is_strict(self) -> None:
         self.assertEqual(
             "owner/repository",

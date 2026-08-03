@@ -77,6 +77,64 @@ class ActionCommandTest(unittest.TestCase):
         self.assertIn("--modified", command)
         self.assertNotIn("--all", command)
 
+    def test_paths_are_split_and_passed_as_positional_arguments(self) -> None:
+        environment = {
+            "GITHUB_ACTION_PATH": str(ROOT),
+            "GITHUB_REPOSITORY": "owner/repository",
+            "LINT_ROOT": "/lint",
+            "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
+            "INPUT_BASE": "main",
+            "INPUT_CWD": ".",
+            "INPUT_DOCKER": "true",
+            "INPUT_PATHS": "src/example.py 'docs/example file.md'",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            command = ENTRYPOINT.command("prepare")
+
+        self.assertIn("src/example.py", command)
+        self.assertIn("docs/example file.md", command)
+        self.assertNotIn("--all", command)
+        self.assertNotIn("--modified", command)
+
+    def test_files_from0_is_passed_as_a_selection(self) -> None:
+        environment = {
+            "GITHUB_ACTION_PATH": str(ROOT),
+            "GITHUB_REPOSITORY": "owner/repository",
+            "LINT_ROOT": "/lint",
+            "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
+            "INPUT_BASE": "main",
+            "INPUT_CWD": ".",
+            "INPUT_DOCKER": "true",
+            "INPUT_FILES_FROM0": "/selection/files",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            command = ENTRYPOINT.command("prepare")
+
+        self.assertEqual(
+            "/selection/files",
+            command[command.index("--files-from0") + 1],
+        )
+        self.assertNotIn("--all", command)
+        self.assertNotIn("--modified", command)
+
+    def test_docker_false_selects_the_local_backend(self) -> None:
+        environment = {
+            "GITHUB_ACTION_PATH": str(ROOT),
+            "GITHUB_REPOSITORY": "owner/repository",
+            "LINT_ROOT": "/lint",
+            "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
+            "INPUT_BASE": "main",
+            "INPUT_CWD": ".",
+            "INPUT_DOCKER": "false",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            command = ENTRYPOINT.command("prepare")
+
+        self.assertIn("--local", command)
+
     def test_publish_does_not_include_hook_or_selection(self) -> None:
         environment = {
             "GITHUB_ACTION_PATH": str(ROOT),
