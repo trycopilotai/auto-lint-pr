@@ -1308,7 +1308,29 @@ def prepared_relative_path(value: Any) -> PurePosixPath:
             raise SafetyError(f"prepared path escapes the repository: {value!r}")
         if component.casefold() == ".git":
             raise SafetyError(f"prepared path targets Git metadata: {value!r}")
+        windows_stem = component.split(".", maxsplit=1)[0].casefold()
+        windows_reserved = {"aux", "con", "nul", "prn"}
+        windows_reserved.update({f"com{index}" for index in range(1, 10)})
+        windows_reserved.update({f"lpt{index}" for index in range(1, 10)})
+        if ":" in component or component.endswith((" ", ".")):
+            raise SafetyError(f"prepared path is unsafe on Windows: {value!r}")
+        if windows_stem in windows_reserved:
+            raise SafetyError(f"prepared path is unsafe on Windows: {value!r}")
     return relative
+
+
+def secure_dir_fd_restoration_available() -> bool:
+    """Return whether descriptor-relative restoration is fully supported."""
+
+    required = (os.open, os.mkdir, os.stat, os.unlink)
+    for operation in required:
+        if operation not in os.supports_dir_fd:
+            return False
+    if getattr(os, "O_DIRECTORY", 0) == 0:
+        return False
+    if getattr(os, "O_NOFOLLOW", 0) == 0:
+        return False
+    return True
 
 
 def open_prepared_parent(
@@ -1317,10 +1339,8 @@ def open_prepared_parent(
 ) -> tuple[int, str]:
     """Pin a prepared path's parent without following symbolic links."""
 
-    required = (os.open, os.mkdir, os.stat, os.unlink)
-    for operation in required:
-        if operation not in os.supports_dir_fd:
-            raise SafetyError("secure restoration requires directory file descriptors")
+    if not secure_dir_fd_restoration_available():
+        raise SafetyError("secure restoration requires directory file descriptors")
     flags = os.O_RDONLY
     flags |= getattr(os, "O_DIRECTORY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -1397,13 +1417,361 @@ def write_prepared_file(parent: int, name: str, payload: bytes) -> None:
                 pass
 
 
-def restore_prepared_delta(
+def prepared_metadata_is_reparse(metadata: os.stat_result) -> bool:
+    """Reject links and Windows reparse points without following them."""
+
+    if stat.S_ISLNK(metadata.st_mode):
+        return True
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse)
+
+
+def prepared_path_metadata(path: Path) -> os.stat_result | None:
+    """Inspect a portable destination without following its final entry."""
+
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+
+
+def prepared_metadata_identity(metadata: os.stat_result) -> tuple[int, int]:
+    """Return fields that change when a guarded path is substituted."""
+
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def open_windows_directory_guard(path: Path) -> tuple[Any, int] | None:
+    """Pin a Windows directory without allowing rename or deletion."""
+
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    file_read_attributes = 0x0080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    handle = create_file(
+        str(path),
+        file_read_attributes,
+        file_share_read | file_share_write,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        raise SafetyError(f"could not guard prepared directory: {path}") from OSError(
+            error,
+            os.strerror(error),
+            str(path),
+        )
+    return kernel32, handle
+
+
+def close_windows_directory_guard(guard: tuple[Any, int] | None) -> None:
+    """Release one Windows directory guard."""
+
+    if guard is None:
+        return
+    kernel32, handle = guard
+    if not kernel32.CloseHandle(handle):
+        error = kernel32.GetLastError()
+        raise SafetyError("could not release prepared directory guard") from OSError(
+            error,
+            os.strerror(error),
+        )
+
+
+def require_prepared_directory(path: Path) -> os.stat_result:
+    """Require a real portable directory rather than a link or reparse point."""
+
+    metadata = prepared_path_metadata(path)
+    if metadata is None:
+        raise SafetyError(f"prepared directory disappeared: {path}")
+    if prepared_metadata_is_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise SafetyError(f"prepared path has an unsafe parent: {path}")
+    return metadata
+
+
+def acquire_prepared_directory_guard(path: Path) -> dict[str, Any]:
+    """Validate and pin one directory used by portable restoration."""
+
+    before = require_prepared_directory(path)
+    windows_guard = open_windows_directory_guard(path)
+    try:
+        after = require_prepared_directory(path)
+        if prepared_metadata_identity(before) != prepared_metadata_identity(after):
+            raise SafetyError(f"prepared directory was substituted: {path}")
+        return {
+            "identity": prepared_metadata_identity(after),
+            "path": path,
+            "windows_guard": windows_guard,
+        }
+    except BaseException:
+        close_windows_directory_guard(windows_guard)
+        raise
+
+
+def validate_prepared_directory_guards(guards: dict[str, dict[str, Any]]) -> None:
+    """Fail when any portable parent no longer names its pinned directory."""
+
+    for guard in guards.values():
+        path = guard["path"]
+        metadata = require_prepared_directory(path)
+        if prepared_metadata_identity(metadata) != guard["identity"]:
+            raise SafetyError(f"prepared directory was substituted: {path}")
+
+
+def close_prepared_directory_guards(guards: dict[str, dict[str, Any]]) -> None:
+    """Release portable restoration guards in deepest-first order."""
+
+    ordered = sorted(
+        guards.values(),
+        key=lambda guard: len(guard["path"].parts),
+        reverse=True,
+    )
+    first_error: SafetyError | None = None
+    for guard in ordered:
+        try:
+            close_windows_directory_guard(guard["windows_guard"])
+        except SafetyError as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
+
+
+def portable_prepared_parent(
+    repository: Path,
+    relative: PurePosixPath,
+    guards: dict[str, dict[str, Any]],
+    created: list[Path],
+) -> Path:
+    """Create and guard a prepared parent on platforms without dir_fd."""
+
+    current = Path(os.path.abspath(repository))
+    for component in (None, *relative.parts[:-1]):
+        if component is not None:
+            current = current / component
+            if prepared_path_metadata(current) is None:
+                try:
+                    os.mkdir(current, mode=0o755)
+                    created.append(current)
+                except FileExistsError:
+                    pass
+        key = os.path.normcase(str(current))
+        if key not in guards:
+            guards[key] = acquire_prepared_directory_guard(current)
+        else:
+            validate_prepared_directory_guards({key: guards[key]})
+    return current
+
+
+def portable_target_state(path: Path) -> tuple[os.stat_result | None, bytes | None]:
+    """Capture a portable target for preflight and transactional rollback."""
+
+    metadata = prepared_path_metadata(path)
+    if metadata is None:
+        return None, None
+    if prepared_metadata_is_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+        raise SafetyError(f"prepared destination is not a regular file: {path}")
+    payload = path.read_bytes()
+    after = prepared_path_metadata(path)
+    if after is None:
+        raise SafetyError(f"prepared destination was substituted: {path}")
+    if prepared_metadata_identity(metadata) != prepared_metadata_identity(after):
+        raise SafetyError(f"prepared destination was substituted: {path}")
+    return after, payload
+
+
+def portable_write_prepared_file(path: Path, payload: bytes) -> None:
+    """Atomically replace a portable target with authenticated bytes."""
+
+    temporary = path.parent / (".auto-lint-pr-" + secrets.token_hex(16))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_BINARY", 0)
+    descriptor = -1
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise SafetyError("could not restore the complete prepared payload")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+        temporary = Path()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary != Path():
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def validate_portable_target(
+    path: Path,
+    expected: os.stat_result | None,
+) -> None:
+    """Require that a portable target still matches its preflight state."""
+
+    actual = prepared_path_metadata(path)
+    if expected is None:
+        if actual is not None:
+            raise SafetyError(f"prepared destination appeared: {path}")
+        return
+    if actual is None or prepared_metadata_is_reparse(actual):
+        raise SafetyError(f"prepared destination was substituted: {path}")
+    if not stat.S_ISREG(actual.st_mode):
+        raise SafetyError(f"prepared destination is not a regular file: {path}")
+    if prepared_metadata_identity(actual) != prepared_metadata_identity(expected):
+        raise SafetyError(f"prepared destination was substituted: {path}")
+
+
+def verify_portable_result(path: Path, payload: bytes | None) -> None:
+    """Confirm that one portable mutation produced the intended state."""
+
+    metadata = prepared_path_metadata(path)
+    if payload is None:
+        if metadata is not None:
+            raise SafetyError(f"prepared deletion was not restored: {path}")
+        return
+    if metadata is None or prepared_metadata_is_reparse(metadata):
+        raise SafetyError(f"prepared destination was substituted: {path}")
+    if not stat.S_ISREG(metadata.st_mode) or path.read_bytes() != payload:
+        raise SafetyError(f"prepared payload was not restored: {path}")
+
+
+def rollback_portable_operations(
+    operations: list[dict[str, Any]],
+    guards: dict[str, dict[str, Any]],
+) -> None:
+    """Restore every already-started portable mutation in reverse order."""
+
+    for operation in reversed(operations):
+        validate_prepared_directory_guards(guards)
+        path = operation["path"]
+        metadata = prepared_path_metadata(path)
+        if metadata is not None:
+            if prepared_metadata_is_reparse(metadata):
+                raise SafetyError(f"prepared rollback target is unsafe: {path}")
+            if not stat.S_ISREG(metadata.st_mode):
+                raise SafetyError(f"prepared rollback target is not a file: {path}")
+        original = operation["original"]
+        if original is None:
+            if metadata is not None:
+                os.unlink(path)
+        else:
+            portable_write_prepared_file(path, original)
+
+
+def restore_prepared_delta_portable(
     repository: Path,
     records: list[dict[str, str]],
 ) -> None:
-    """Materialize recorded bytes into a clean checkout without credentials."""
+    """Restore a whole delta transactionally without directory descriptors."""
 
-    validate_prepared_modes(records)
+    guards: dict[str, dict[str, Any]] = {}
+    created: list[Path] = []
+    operations: list[dict[str, Any]] = []
+    started: list[dict[str, Any]] = []
+    completed = False
+    try:
+        seen: set[str] = set()
+        for record in records:
+            relative = prepared_relative_path(record.get("path"))
+            path_key = relative.as_posix().casefold()
+            if path_key in seen:
+                raise SafetyError(f"prepared path is duplicated: {relative}")
+            seen.add(path_key)
+            parent = portable_prepared_parent(repository, relative, guards, created)
+            target = parent / relative.parts[-1]
+            metadata, original = portable_target_state(target)
+            if record["kind"] == "deleted":
+                if metadata is None:
+                    raise SafetyError(
+                        f"prepared deletion is not a regular file: {relative}"
+                    )
+                if metadata.st_mode & 0o111:
+                    raise SafetyError(
+                        f"prepared deletion changes an executable: {relative}"
+                    )
+                payload = None
+            else:
+                payload = prepared_payload(record)
+            operations.append(
+                {
+                    "metadata": metadata,
+                    "original": original,
+                    "path": target,
+                    "payload": payload,
+                }
+            )
+        for operation in operations:
+            validate_prepared_directory_guards(guards)
+            validate_portable_target(operation["path"], operation["metadata"])
+            started.append(operation)
+            payload = operation["payload"]
+            if payload is None:
+                os.unlink(operation["path"])
+            else:
+                portable_write_prepared_file(operation["path"], payload)
+            validate_prepared_directory_guards(guards)
+            verify_portable_result(operation["path"], payload)
+        completed = True
+    except BaseException:
+        try:
+            rollback_portable_operations(started, guards)
+        except BaseException as rollback_error:
+            raise SafetyError(
+                "portable prepared restoration rollback failed"
+            ) from rollback_error
+        raise
+    finally:
+        close_prepared_directory_guards(guards)
+        if not completed:
+            for path in reversed(created):
+                try:
+                    path.rmdir()
+                except (FileNotFoundError, OSError):
+                    pass
+
+
+def restore_prepared_delta_dir_fd(
+    repository: Path,
+    records: list[dict[str, str]],
+) -> None:
+    """Restore records through pinned descriptor-relative parents."""
+
     for record in records:
         relative = prepared_relative_path(record.get("path"))
         parent, name = open_prepared_parent(repository, relative)
@@ -1428,6 +1796,19 @@ def restore_prepared_delta(
             write_prepared_file(parent, name, prepared_payload(record))
         finally:
             os.close(parent)
+
+
+def restore_prepared_delta(
+    repository: Path,
+    records: list[dict[str, str]],
+) -> None:
+    """Materialize recorded bytes into a clean checkout without credentials."""
+
+    validate_prepared_modes(records)
+    if secure_dir_fd_restoration_available():
+        restore_prepared_delta_dir_fd(repository, records)
+        return
+    restore_prepared_delta_portable(repository, records)
 
 
 def ensure_clean(repository: Path) -> None:

@@ -8,11 +8,13 @@ import io
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -2041,6 +2043,208 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
             self.assertEqual("outside\n", outside_sample.read_text(encoding="utf-8"))
             self.assertEqual(payload, (saved / "sample.txt").read_bytes())
+
+    def test_portable_restore_applies_a_complete_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            changed = repository / "changed.txt"
+            deleted = repository / "deleted.txt"
+            changed.write_text("before\n", encoding="utf-8", newline="\n")
+            deleted.write_text("delete\n", encoding="utf-8", newline="\n")
+            commit_all(repository)
+            changed_payload = b"after\n"
+            added_payload = b"added\n"
+            records = [
+                {
+                    "content": base64.b64encode(changed_payload).decode("ascii"),
+                    "kind": "file",
+                    "mode": "100644",
+                    "path": "changed.txt",
+                    "sha256": hashlib.sha256(changed_payload).hexdigest(),
+                },
+                {
+                    "content": "",
+                    "kind": "deleted",
+                    "mode": "100644",
+                    "path": "deleted.txt",
+                    "sha256": "",
+                },
+                {
+                    "content": base64.b64encode(added_payload).decode("ascii"),
+                    "kind": "file",
+                    "mode": "100644",
+                    "path": "nested/added.txt",
+                    "sha256": hashlib.sha256(added_payload).hexdigest(),
+                },
+            ]
+
+            with mock.patch.object(
+                AUTO_LINT_PR,
+                "secure_dir_fd_restoration_available",
+                return_value=False,
+            ):
+                AUTO_LINT_PR.restore_prepared_delta(repository, records)
+
+            self.assertEqual(changed_payload, changed.read_bytes())
+            self.assertFalse(deleted.exists())
+            self.assertEqual(
+                added_payload, (repository / "nested/added.txt").read_bytes()
+            )
+
+    def test_portable_restore_rejects_links_and_wrong_types(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            outside = root / "outside"
+            outside.mkdir()
+            (repository / "linked").symlink_to(outside, target_is_directory=True)
+            (repository / "directory.txt").mkdir()
+            payload = b"prepared\n"
+
+            with mock.patch.object(
+                AUTO_LINT_PR,
+                "secure_dir_fd_restoration_available",
+                return_value=False,
+            ):
+                for path in ("linked/sample.txt", "directory.txt"):
+                    record = {
+                        "content": base64.b64encode(payload).decode("ascii"),
+                        "kind": "file",
+                        "mode": "100644",
+                        "path": path,
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                    with self.subTest(path=path):
+                        with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                            AUTO_LINT_PR.restore_prepared_delta(repository, [record])
+
+            self.assertFalse((outside / "sample.txt").exists())
+            self.assertTrue((repository / "directory.txt").is_dir())
+
+    def test_portable_restore_detects_a_substituted_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "consumer"
+            initialize_repository(repository)
+            nested = repository / "nested"
+            nested.mkdir()
+            sample = nested / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
+            outside = root / "outside"
+            outside.mkdir()
+            outside_sample = outside / "sample.txt"
+            outside_sample.write_text("outside\n", encoding="utf-8", newline="\n")
+            saved = root / "saved-parent"
+            payload = b"prepared\n"
+            record = {
+                "content": base64.b64encode(payload).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "nested/sample.txt",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            validate_target = AUTO_LINT_PR.validate_portable_target
+            swapped = False
+
+            def swap_then_validate(path, expected):
+                nonlocal swapped
+                if not swapped:
+                    nested.rename(saved)
+                    nested.symlink_to(outside, target_is_directory=True)
+                    swapped = True
+                validate_target(path, expected)
+
+            with mock.patch.object(
+                AUTO_LINT_PR,
+                "secure_dir_fd_restoration_available",
+                return_value=False,
+            ):
+                with mock.patch.object(
+                    AUTO_LINT_PR,
+                    "validate_portable_target",
+                    side_effect=swap_then_validate,
+                ):
+                    with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                        AUTO_LINT_PR.restore_prepared_delta(repository, [record])
+
+            self.assertEqual("outside\n", outside_sample.read_text(encoding="utf-8"))
+            self.assertEqual(
+                "before\n", (saved / "sample.txt").read_text(encoding="utf-8")
+            )
+
+    def test_portable_restore_rolls_back_a_partial_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            first = repository / "first.txt"
+            second = repository / "second.txt"
+            first.write_text("first-before\n", encoding="utf-8", newline="\n")
+            second.write_text("second-before\n", encoding="utf-8", newline="\n")
+            commit_all(repository)
+            records = []
+            for path, payload in (
+                ("first.txt", b"first-after\n"),
+                ("second.txt", b"second-after\n"),
+            ):
+                records.append(
+                    {
+                        "content": base64.b64encode(payload).decode("ascii"),
+                        "kind": "file",
+                        "mode": "100644",
+                        "path": path,
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                )
+            real_write = AUTO_LINT_PR.portable_write_prepared_file
+            calls = 0
+
+            def fail_second_write(path: Path, payload: bytes) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected portable write failure")
+                real_write(path, payload)
+
+            with mock.patch.object(
+                AUTO_LINT_PR,
+                "secure_dir_fd_restoration_available",
+                return_value=False,
+            ):
+                with mock.patch.object(
+                    AUTO_LINT_PR,
+                    "portable_write_prepared_file",
+                    side_effect=fail_second_write,
+                ):
+                    with self.assertRaisesRegex(OSError, "injected"):
+                        AUTO_LINT_PR.restore_prepared_delta(repository, records)
+
+            self.assertEqual("first-before\n", first.read_text(encoding="utf-8"))
+            self.assertEqual("second-before\n", second.read_text(encoding="utf-8"))
+
+    def test_prepared_paths_reject_windows_aliases(self) -> None:
+        for path in (
+            "CON",
+            "nested/aux.txt",
+            "nested/trailing.",
+            "nested/trailing ",
+            "nested/file.txt:stream",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(
+                    AUTO_LINT_PR.SafetyError,
+                    "unsafe on Windows",
+                ):
+                    AUTO_LINT_PR.prepared_relative_path(path)
+
+    def test_windows_reparse_metadata_is_rejected(self) -> None:
+        metadata = SimpleNamespace(
+            st_file_attributes=0x400,
+            st_mode=stat.S_IFDIR | 0o755,
+        )
+
+        self.assertTrue(AUTO_LINT_PR.prepared_metadata_is_reparse(metadata))
 
     def test_formatter_failure_stops_before_publish(self) -> None:
         with mock.patch.object(
