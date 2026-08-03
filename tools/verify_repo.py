@@ -345,8 +345,9 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("prepare job does not prefetch private lint images")
     if "tools/prefetch_images.py" not in prepare:
         raise ValueError("prepare job bypasses the trusted image resolver")
-    if "docker logout ghcr.io" not in prepare:
-        raise ValueError("prepare job does not log out from the registry")
+    scoped_logout = 'DOCKER_CONFIG="$auth" "$docker_path" logout ghcr.io'
+    if scoped_logout not in prepare:
+        raise ValueError("prepare job does not use scoped registry logout")
     if "grep -F -q 'ghcr.io'" not in prepare:
         raise ValueError("prepare job could expose residual registry credentials")
     if 'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"' not in prepare:

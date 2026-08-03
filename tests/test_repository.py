@@ -94,7 +94,10 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("secrets.registry_token", text)
         self.assertIn("packages: read", text)
         self.assertIn("Prefetch private images by exact digest", text)
-        self.assertIn('"$docker_path" logout ghcr.io', text)
+        self.assertIn(
+            'DOCKER_CONFIG="$auth" "$docker_path" logout ghcr.io',
+            text,
+        )
         self.assertIn("grep -F -q 'ghcr.io'", text)
         self.assertIn('DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"', text)
         self.assertIn("workspace-root: workspace", text)
