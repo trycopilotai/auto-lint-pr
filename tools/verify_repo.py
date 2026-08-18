@@ -230,8 +230,11 @@ def verify_lint_manifest(path: Path | None = None) -> None:
     if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise ValueError("lint release archive checksum is invalid")
     release = value.get("release")
-    if release != "0.1.5":
-        raise ValueError("lint release manifest has the wrong release")
+    if not isinstance(release, str) or not release:
+        raise ValueError("lint release manifest has no release")
+    # LINT_REF is the single pinned source of truth and is rewritten
+    # by the repin transaction. Deriving the expected release from it
+    # keeps a second literal from drifting out of step with the pin.
     if LINT_REF != f"refs/tags/v{release}":
         raise ValueError("lint release manifest and ref do not match")
     if source.get("archive") != f"lint-{release}.tar.gz":

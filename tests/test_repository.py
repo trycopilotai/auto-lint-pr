@@ -750,6 +750,27 @@ class LaunchWordingTest(unittest.TestCase):
             self.assertTrue((ROOT / name).is_file(), name)
 
 
+class LintReleasePinTest(unittest.TestCase):
+    """The pinned release is carried by LINT_REF alone."""
+
+    def test_verifier_holds_no_second_release_literal(self) -> None:
+        source = (ROOT / "tools" / "verify_repo.py").read_text(encoding="utf-8")
+        pinned = verify_repo.LINT_REF.rsplit("/", 1)[1].removeprefix("v")
+        # The version may appear once, as part of LINT_REF itself.
+        self.assertEqual(
+            1,
+            source.count(pinned),
+            "the pinned release must appear only inside LINT_REF",
+        )
+
+    def test_manifest_release_must_agree_with_the_ref(self) -> None:
+        pinned = verify_repo.LINT_REF.rsplit("/", 1)[1].removeprefix("v")
+        manifest = json.loads(
+            (ROOT / "lint-release-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(pinned, manifest["release"])
+
+
 class PluginClaimTest(unittest.TestCase):
     """BLOCK-11: the plugin description is the README claim."""
 
