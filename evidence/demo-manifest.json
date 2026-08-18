@@ -5,11 +5,11 @@
   },
   "generator": {
     "path": "scripts/generate_demo.py",
-    "sha256": "893675dd1b82c5d8cd3ff0d950e7721e33af32621c6cccdd2c0d386c01a351c9"
+    "sha256": "5fafbb2aae4de479a37fe83f8a57a8a72a04ec20c9f04500e958632614b0ebf7"
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "0187fba6c432143d858eb765096e85ff913be1946673b1a9ae058d76bc041222"
+    "sha256": "3be2f3c7db935be82346fdafff4187dd32a8676174cfdc8f7d8bb2ca5fde9680"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -24,21 +24,21 @@
     "sha256": "6c64d1859fdcdfa101ea28abb0a73f0ca087884c83534799b314f5fb7d54082b"
   },
   "run": {
-    "agent": "Codex",
-    "agent_version": "codex-cli 0.146.0",
-    "date": "2026-08-02",
+    "agent": "Claude",
+    "agent_version": "Claude Opus 5",
+    "date": "2026-08-17",
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
-    "input_commit": "f4643e5aff0968c26d986ae7421605445c9126dc",
-    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit f4643e5aff0968c26d986ae7421605445c9126dc --agent Codex --agent-version 'codex-cli 0.146.0'",
+    "input_commit": "8573d77a1679f144aaf6f78893cd16cdc17d30d9",
+    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit 8573d77a1679f144aaf6f78893cd16cdc17d30d9 --agent Claude --agent-version 'Claude Opus 5' --evidence-date 2026-08-17",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
-    "protocol_sha256": "609a5e6b8514a03f19eac7ed589042d193474b656ad847367c5b0bce645ab49e"
+    "protocol_sha256": "ebc65bfb76510db8a739ce310dcc2f44ce55582638cdcdc2d5340ba3dd20cf8f"
   },
   "schema": 1,
   "skill": {
     "path": "skills/auto-lint-pr/SKILL.md",
-    "sha256": "609a5e6b8514a03f19eac7ed589042d193474b656ad847367c5b0bce645ab49e"
+    "sha256": "ebc65bfb76510db8a739ce310dcc2f44ce55582638cdcdc2d5340ba3dd20cf8f"
   },
   "social_preview": {
     "path": "assets/social-preview.png",
