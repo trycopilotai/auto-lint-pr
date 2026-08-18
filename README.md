@@ -313,8 +313,7 @@ are not part of that metric.
 
 ## Claude Code
 
-After public launch, install the pinned standalone skill
-without authentication:
+Install the pinned standalone skill without authentication:
 
 ```sh
 release=v0.1.0
@@ -334,13 +333,13 @@ cp "$target/skills/auto-lint-pr/SKILL.md" \
 The standalone invocation is `/auto-lint-pr`. A Claude
 marketplace distribution uses `/auto-lint-pr:auto-lint-pr`.
 Marketplace registration and marketplace install
-verification are deferred until a separately approved public
-launch; the block above is the standalone installation path.
+verification have not been performed; the block above is the
+standalone installation path.
 
 ## Codex
 
-After public launch, install the same pinned skill into the
-Codex skill store without authentication:
+Install the same pinned skill into the Codex skill store
+without authentication:
 
 ```sh
 release=v0.1.0
@@ -360,8 +359,7 @@ cp "$target/skills/auto-lint-pr/SKILL.md" \
 Invoke it as `$auto-lint-pr`.
 
 Codex marketplace registration and marketplace install
-verification are also deferred until that separately
-approved public launch.
+verification have not been performed either.
 
 ## License
 

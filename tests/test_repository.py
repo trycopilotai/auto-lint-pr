@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import html
 import hashlib
 import json
@@ -495,7 +496,8 @@ class LaunchSurfaceTest(unittest.TestCase):
         self.assertNotEqual("generate_demo.py", run["agent"])
         self.assertNotEqual("", run["agent"])
         self.assertNotEqual("", run["agent_version"])
-        self.assertEqual("2026-08-02", run["date"])
+        self.assertRegex(run["date"], r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+        datetime.date.fromisoformat(run["date"])
         self.assertFalse(run["edited"])
         self.assertRegex(run["input_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(run["fixture_consumer_commit"], r"^[0-9a-f]{40}$")
@@ -514,6 +516,10 @@ class LaunchSurfaceTest(unittest.TestCase):
         self.assertEqual(
             run["input_commit"],
             invocation[invocation.index("--input-commit") + 1],
+        )
+        self.assertEqual(
+            run["date"],
+            invocation[invocation.index("--evidence-date") + 1],
         )
         self.assertEqual(
             0,
@@ -633,6 +639,8 @@ class LaunchSurfaceTest(unittest.TestCase):
                     "Evidence Test",
                     "--agent-version",
                     "1",
+                    "--evidence-date",
+                    "2026-08-17",
                 ],
                 cwd=candidate,
                 check=False,
@@ -713,6 +721,93 @@ class LaunchSurfaceTest(unittest.TestCase):
             "transaction-bug.yml",
         ):
             self.assertTrue((ROOT / ".github" / "ISSUE_TEMPLATE" / name).is_file())
+
+
+class LaunchWordingTest(unittest.TestCase):
+    """BLOCK-05: stale launch prose must not be able to return."""
+
+    def test_current_launch_surface_is_clean(self) -> None:
+        verify_repo.verify_public_wording()
+
+    def test_phrase_wrapped_by_the_codec_is_still_detected(self) -> None:
+        readme = ROOT / "README.md"
+        original = readme.read_text(encoding="utf-8")
+        try:
+            readme.write_text(
+                original
+                + "\nMarketplace steps are deferred until a\n"
+                + "separately approved public launch.\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                verify_repo.verify_public_wording()
+        finally:
+            readme.write_text(original, encoding="utf-8")
+        verify_repo.verify_public_wording()
+
+    def test_every_recipient_visible_document_is_scanned(self) -> None:
+        for name in verify_repo.RECIPIENT_VISIBLE_DOCUMENTS:
+            self.assertTrue((ROOT / name).is_file(), name)
+
+
+class EvidenceDateProvenanceTest(unittest.TestCase):
+    """BLOCK-04: the capture date is an input, not a source constant."""
+
+    def setUp(self) -> None:
+        self.generator = _load_generator()
+
+    def test_generator_carries_no_hard_coded_evidence_date(self) -> None:
+        source = (ROOT / "scripts" / "generate_demo.py").read_text(encoding="utf-8")
+        self.assertNotIn("EVIDENCE_DATE = ", source)
+
+    def test_missing_date_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.generator.require_evidence_date(None)
+
+    def test_malformed_dates_are_rejected(self) -> None:
+        for value in ("2026-8-2", "20260802", "2026-13-01", "", "today"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.generator.require_evidence_date(value)
+
+    def test_well_formed_date_is_accepted(self) -> None:
+        self.assertEqual(
+            "2026-08-17",
+            self.generator.require_evidence_date("2026-08-17"),
+        )
+
+    def test_invocation_must_record_the_date(self) -> None:
+        with self.assertRaises(ValueError):
+            self.generator.require_invocation_date(
+                "python3 scripts/generate_demo.py --write",
+                "2026-08-17",
+            )
+
+    def test_invocation_date_mismatch_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.generator.require_invocation_date(
+                "python3 scripts/generate_demo.py --evidence-date 2026-08-16",
+                "2026-08-17",
+            )
+
+    def test_invocation_agreement_is_accepted(self) -> None:
+        self.generator.require_invocation_date(
+            "python3 scripts/generate_demo.py --evidence-date 2026-08-17",
+            "2026-08-17",
+        )
+
+
+def _load_generator():
+    import importlib.util
+
+    path = ROOT / "scripts" / "generate_demo.py"
+    specification = importlib.util.spec_from_file_location(
+        "generate_demo_under_test",
+        path,
+    )
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
 
 
 if __name__ == "__main__":

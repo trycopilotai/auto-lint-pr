@@ -101,3 +101,12 @@ Confirm:
 
 Report the workflow path, pinned revisions, selection, hook,
 and exact verification command.
+
+## Project
+
+- Source, issues, and the exact verification command:
+  https://github.com/trycopilotai/auto-lint-pr
+- Security policy and private vulnerability reporting:
+  https://github.com/trycopilotai/auto-lint-pr/blob/main/SECURITY.md
+- The formatter this skill pins:
+  https://github.com/trycopilotai/lint

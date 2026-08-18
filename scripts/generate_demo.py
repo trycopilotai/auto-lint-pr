@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -22,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 TRANSCRIPT_PATH = ROOT / "evidence" / "demo-transcript.txt"
 DEMO_PATH = ROOT / "assets" / "demo.svg"
 MANIFEST_PATH = ROOT / "evidence" / "demo-manifest.json"
-EVIDENCE_DATE = "2026-08-02"
 FIXTURE_DATE = "2026-08-02T00:00:00Z"
 TOKEN_NAMES = (
     "GITHUB_TOKEN",
@@ -31,6 +31,8 @@ TOKEN_NAMES = (
     "ACTIONS_RUNTIME_TOKEN",
 )
 GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+ISO_DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+EVIDENCE_DATE_OPTION = "--evidence-date"
 
 
 def isolated_git_environment(
@@ -372,7 +374,7 @@ def demo_manifest(
         "run": {
             "agent": metadata["agent"],
             "agent_version": metadata["agent_version"],
-            "date": EVIDENCE_DATE,
+            "date": metadata["date"],
             "edited": False,
             "fixture_consumer_commit": run["fixture_consumer_commit"],
             "fixture_lint_commit": run["fixture_lint_commit"],
@@ -397,6 +399,7 @@ def parser() -> argparse.ArgumentParser:
     argument_parser.add_argument("--input-commit")
     argument_parser.add_argument("--agent")
     argument_parser.add_argument("--agent-version")
+    argument_parser.add_argument("--evidence-date")
     return argument_parser
 
 
@@ -417,6 +420,32 @@ def require_candidate_commit(value: str) -> str:
     if completed.returncode != 0:
         raise ValueError("demo input commit is not reachable from HEAD")
     return value
+
+
+def require_evidence_date(value: object) -> str:
+    """Require a strict ISO calendar date for the capture."""
+
+    if not isinstance(value, str) or ISO_DATE_PATTERN.fullmatch(value) is None:
+        raise ValueError("demo evidence date must be an ISO YYYY-MM-DD date")
+    try:
+        date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("demo evidence date is not a real date") from error
+    return value
+
+
+def require_invocation_date(invocation: str, expected: str) -> None:
+    """Require the recorded invocation to carry the recorded date."""
+
+    try:
+        parts = shlex.split(invocation)
+    except ValueError as error:
+        raise ValueError("demo invocation is not parseable") from error
+    if EVIDENCE_DATE_OPTION not in parts:
+        raise ValueError("demo invocation does not record " + EVIDENCE_DATE_OPTION)
+    index = parts.index(EVIDENCE_DATE_OPTION)
+    if index + 1 >= len(parts) or parts[index + 1] != expected:
+        raise ValueError("demo evidence date disagrees with its invocation")
 
 
 def recorded_invocation() -> str:
@@ -440,7 +469,13 @@ def manifest_metadata(arguments: argparse.Namespace) -> dict[str, str]:
         if not isinstance(run, dict):
             raise ValueError("demo manifest run metadata is missing")
         metadata = {}
-        for name in ("agent", "agent_version", "input_commit", "invocation"):
+        for name in (
+            "agent",
+            "agent_version",
+            "date",
+            "input_commit",
+            "invocation",
+        ):
             value = run.get(name)
             if not isinstance(value, str) or value == "":
                 raise ValueError(f"demo manifest has an invalid {name}")
@@ -450,15 +485,21 @@ def manifest_metadata(arguments: argparse.Namespace) -> dict[str, str]:
             "agent": arguments.agent,
             "agent_version": arguments.agent_version,
             "input_commit": arguments.input_commit,
+            "date": arguments.evidence_date,
         }
         metadata = {}
         for name, value in values.items():
             if not isinstance(value, str) or value == "":
-                option = name.replace("_", "-")
-                raise ValueError(f"--write requires --{option}")
+                if name == "date":
+                    option = EVIDENCE_DATE_OPTION
+                else:
+                    option = "--" + name.replace("_", "-")
+                raise ValueError(f"--write requires {option}")
             metadata[name] = value
         metadata["invocation"] = recorded_invocation()
     metadata["input_commit"] = require_candidate_commit(metadata["input_commit"])
+    metadata["date"] = require_evidence_date(metadata["date"])
+    require_invocation_date(metadata["invocation"], metadata["date"])
     return metadata
 
 

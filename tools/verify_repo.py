@@ -13,6 +13,7 @@ import shlex
 import struct
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 
@@ -542,6 +543,48 @@ def verify_launch_surface() -> None:
         raise ValueError("technical article is not marked as a draft")
 
 
+# Prose that defers work until a future public launch. The
+# repository is public, so each of these is false on a
+# recipient-visible surface.
+LAUNCH_STATE_PHRASES = (
+    "after public launch",
+    "separately approved public launch",
+    "deferred public launch",
+    "visibility private",
+    "the private repository plan",
+)
+
+RECIPIENT_VISIBLE_DOCUMENTS = (
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/publishing.md",
+    "docs/exact-delta-boundary.md",
+    "skills/auto-lint-pr/SKILL.md",
+)
+
+
+ISO_DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
+def verify_public_wording() -> None:
+    """Reject launch-state contradictions on reader-visible prose.
+
+    The 60-column Markdown codec wraps these phrases across
+    lines, so each document is matched with its whitespace
+    collapsed rather than line by line.
+    """
+
+    for name in RECIPIENT_VISIBLE_DOCUMENTS:
+        path = ROOT / name
+        if not path.exists():
+            raise ValueError(f"recipient-visible document is missing: {name}")
+        collapsed = " ".join(path.read_text(encoding="utf-8").split()).lower()
+        for phrase in LAUNCH_STATE_PHRASES:
+            if phrase in collapsed:
+                raise ValueError(f"{name} defers a launch that happened: {phrase}")
+
+
 def verify_demo() -> None:
     path = ROOT / "evidence" / "demo-manifest.json"
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -596,8 +639,28 @@ def verify_demo() -> None:
             raise ValueError(f"demo run value is invalid: {key}")
     if run["agent"] == "generate_demo.py":
         raise ValueError("demo run agent identifies the generator")
-    if run["date"] != "2026-08-02":
+    date_value = run["date"]
+    if (
+        not isinstance(date_value, str)
+        or ISO_DATE_PATTERN.fullmatch(date_value) is None
+    ):
         raise ValueError("demo run date is invalid")
+    try:
+        date.fromisoformat(date_value)
+    except ValueError as error:
+        raise ValueError("demo run date is not a real date") from error
+    try:
+        invocation_parts = shlex.split(run["invocation"])
+    except ValueError as error:
+        raise ValueError("demo invocation is not parseable") from error
+    if "--evidence-date" not in invocation_parts:
+        raise ValueError("demo invocation does not record --evidence-date")
+    date_index = invocation_parts.index("--evidence-date")
+    if (
+        date_index + 1 >= len(invocation_parts)
+        or invocation_parts[date_index + 1] != date_value
+    ):
+        raise ValueError("demo run date disagrees with its invocation")
     if run["edited"] is not False:
         raise ValueError("demo run edited flag is invalid")
     for key in (
@@ -693,6 +756,7 @@ def main() -> int:
     verify_actions(files)
     verify_action_boundary()
     verify_launch_surface()
+    verify_public_wording()
     verify_demo()
     print(
         json.dumps(
