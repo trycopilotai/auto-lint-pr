@@ -173,6 +173,17 @@ def verify_python(files: list[Path]) -> None:
                 raise ValueError(f"ternary expression: {path}:{node.lineno}")
 
 
+def readme_claim() -> str:
+    """Return the README's first-screen claim as plain text."""
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    match = re.search(r"^Turn pinned.*?(?=\n\n)", readme, re.S | re.M)
+    if match is None:
+        raise ValueError("README first-screen claim is missing")
+    claim = re.sub(r"\[`?([^\]`]+)`?\]\([^)]*\)", r"\1", match.group(0))
+    return " ".join(claim.split())
+
+
 def verify_plugins() -> None:
     for relative in (
         ".claude-plugin/plugin.json",
@@ -184,6 +195,10 @@ def verify_plugins() -> None:
             raise ValueError(f"wrong plugin name: {relative}")
         if value.get("version") != "0.1.0":
             raise ValueError(f"wrong plugin version: {relative}")
+        if value.get("description") != readme_claim():
+            raise ValueError(
+                f"plugin description differs from the README claim: {relative}"
+            )
 
 
 def verify_lint_manifest(path: Path | None = None) -> None:

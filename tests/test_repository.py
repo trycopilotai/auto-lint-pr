@@ -750,6 +750,38 @@ class LaunchWordingTest(unittest.TestCase):
             self.assertTrue((ROOT / name).is_file(), name)
 
 
+class PluginClaimTest(unittest.TestCase):
+    """BLOCK-11: the plugin description is the README claim."""
+
+    def test_manifest_descriptions_match_the_readme_claim(self) -> None:
+        verify_repo.verify_plugins()
+        claim = verify_repo.readme_claim()
+        self.assertIn("trycopilotai/lint", claim)
+        for relative in (
+            ".claude-plugin/plugin.json",
+            ".codex-plugin/plugin.json",
+        ):
+            value = json.loads((ROOT / relative).read_text(encoding="utf-8"))
+            self.assertEqual(claim, value["description"], relative)
+
+    def test_a_drifted_description_is_rejected(self) -> None:
+        path = ROOT / ".claude-plugin" / "plugin.json"
+        original = path.read_text(encoding="utf-8")
+        try:
+            value = json.loads(original)
+            drifted = original.replace(
+                json.dumps(value["description"]),
+                json.dumps("Something else entirely."),
+                1,
+            )
+            path.write_text(drifted, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                verify_repo.verify_plugins()
+        finally:
+            path.write_text(original, encoding="utf-8")
+        verify_repo.verify_plugins()
+
+
 class EvidenceDateProvenanceTest(unittest.TestCase):
     """BLOCK-04: the capture date is an input, not a source constant."""
 
