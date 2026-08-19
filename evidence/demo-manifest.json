@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "3be2f3c7db935be82346fdafff4187dd32a8676174cfdc8f7d8bb2ca5fde9680"
+    "sha256": "7d45c20986c1f63668e2e85e5e9ee234db2eb0e482a2fd70682c21b5028dcf8a"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -26,12 +26,12 @@
   "run": {
     "agent": "Claude",
     "agent_version": "Claude Opus 5",
-    "date": "2026-08-17",
+    "date": "2026-08-19",
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
-    "input_commit": "8573d77a1679f144aaf6f78893cd16cdc17d30d9",
-    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit 8573d77a1679f144aaf6f78893cd16cdc17d30d9 --agent Claude --agent-version 'Claude Opus 5' --evidence-date 2026-08-17",
+    "input_commit": "c9ae71788b6f06bcab46d11baf52403c15dfb674",
+    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit c9ae71788b6f06bcab46d11baf52403c15dfb674 --agent Claude --agent-version 'Claude Opus 5' --evidence-date 2026-08-19",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
     "protocol_sha256": "ebc65bfb76510db8a739ce310dcc2f44ce55582638cdcdc2d5340ba3dd20cf8f"
   },
