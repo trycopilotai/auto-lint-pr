@@ -29,6 +29,15 @@ DEFAULT_DEPENDENCY = ROOT / "lint-dependency.json"
 DEFAULT_ALLOWED_SIGNERS = ROOT / ".github" / "lint-release-allowed-signers"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 BOT_LOGIN = "github-actions[bot]"
+# GitHub commits on your behalf when it signs for you, so a commit
+# made through `createCommitOnBranch` records GitHub's own signing
+# identity as the committer rather than the account that asked for
+# it. The account is still the author, which is where provenance
+# lives. Accepting this identity is only safe in the presence of
+# `wasSignedByGitHub`, which is why the committer is checked after
+# the signature and not before.
+GITHUB_SIGNER_EMAIL = "noreply@github.com"
+GITHUB_SIGNER_LOGIN = "web-flow"
 TOKEN_NAMES = (
     "GITHUB_TOKEN",
     "GH_TOKEN",
@@ -2341,6 +2350,21 @@ def revalidate_publication(
     return pull_request
 
 
+def committed_by_bot_or_github(login: Any, email: Any) -> bool:
+    """Report whether a committer identity is one this tool creates.
+
+    Two identities qualify. The bot commits when a caller builds the
+    commit itself. GitHub commits when it signs one on the bot's
+    behalf, which is what `createCommitOnBranch` does, and it stamps
+    its own `web-flow` identity while doing so. Both halves of an
+    identity must agree; a login without its matching email is a
+    different account wearing the name.
+    """
+    if login == BOT_LOGIN and email == BOT_EMAIL:
+        return True
+    return login == GITHUB_SIGNER_LOGIN and email == GITHUB_SIGNER_EMAIL
+
+
 def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
     """Require every branch-only commit to be signed and bot-owned."""
 
@@ -2352,8 +2376,6 @@ def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
         commit = record.get("commit")
         if not isinstance(author, dict) or author.get("login") != BOT_LOGIN:
             raise SafetyError("auto-lint branch has a non-bot author")
-        if not isinstance(committer, dict) or committer.get("login") != BOT_LOGIN:
-            raise SafetyError("auto-lint branch has a non-bot committer")
         if not isinstance(commit, dict):
             raise SafetyError("auto-lint branch commit metadata is missing")
         raw_author = commit.get("author")
@@ -2364,10 +2386,6 @@ def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
             raise SafetyError("auto-lint branch author metadata is missing")
         if raw_author.get("email") != BOT_EMAIL:
             raise SafetyError("auto-lint branch author email is not the bot")
-        if not isinstance(raw_committer, dict):
-            raise SafetyError("auto-lint branch committer metadata is missing")
-        if raw_committer.get("email") != BOT_EMAIL:
-            raise SafetyError("auto-lint branch committer email is not the bot")
         if not isinstance(verification, dict):
             raise SafetyError("auto-lint branch signature metadata is missing")
         if verification.get("verified") is not True:
@@ -2378,6 +2396,20 @@ def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
             raise SafetyError("auto-lint branch GitHub signature is invalid")
         if signature.get("wasSignedByGitHub") is not True:
             raise SafetyError("auto-lint branch was not signed by GitHub")
+        # Deliberately after the signature checks. GitHub's signing
+        # identity is only an acceptable committer because the three
+        # assertions above have already established that GitHub, and
+        # not a person, produced this commit.
+        if not isinstance(committer, dict) or not isinstance(raw_committer, dict):
+            raise SafetyError("auto-lint branch committer metadata is missing")
+        if not committed_by_bot_or_github(
+            committer.get("login"),
+            raw_committer.get("email"),
+        ):
+            raise SafetyError(
+                "auto-lint branch has a non-bot committer: "
+                + str(committer.get("login"))
+            )
 
 
 def github_commit_signature(
