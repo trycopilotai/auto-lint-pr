@@ -898,6 +898,86 @@ class BranchSafetyTest(unittest.TestCase):
                 with self.assertRaises(AUTO_LINT_PR.SafetyError):
                     AUTO_LINT_PR.validate_branch_commits(commits)
 
+    def test_github_signs_as_itself_and_that_commit_is_accepted(
+        self,
+    ) -> None:
+        """The shape `createCommitOnBranch` actually returns.
+
+        GitHub commits on the bot's behalf when it signs, so it
+        records `web-flow` as the committer and keeps the bot as the
+        author. Three commits made by this tool against a real
+        repository all came back this way, and the previous rule
+        rejected every one of them, which meant the tool could not
+        publish a commit it had just created.
+        """
+        signed_by_github = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.GITHUB_SIGNER_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.GITHUB_SIGNER_EMAIL},
+                "verification": {"verified": True},
+            },
+            "github_signature": {
+                "isValid": True,
+                "wasSignedByGitHub": True,
+            },
+            "sha": "644906cc14f427a4d95e47a5f9200707b8ff1104",
+        }
+        AUTO_LINT_PR.validate_branch_commits([signed_by_github])
+
+    def test_the_signer_identity_is_not_a_way_in(self) -> None:
+        """`web-flow` is accepted as evidence, not as a name.
+
+        It is only allowed because the signature checks have already
+        proved GitHub made the commit, and only as a complete
+        identity. Half of it, or an unsigned commit wearing it, is
+        still refused.
+        """
+        base = {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.GITHUB_SIGNER_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.GITHUB_SIGNER_EMAIL},
+                "verification": {"verified": True},
+            },
+            "github_signature": {
+                "isValid": True,
+                "wasSignedByGitHub": True,
+            },
+            "sha": "signed",
+        }
+        not_signed_by_github = json.loads(json.dumps(base))
+        not_signed_by_github["github_signature"]["wasSignedByGitHub"] = False
+        invalid_signature = json.loads(json.dumps(base))
+        invalid_signature["github_signature"]["isValid"] = False
+        unverified = json.loads(json.dumps(base))
+        unverified["commit"]["verification"]["verified"] = False
+        borrowed_login = json.loads(json.dumps(base))
+        borrowed_login["commit"]["committer"]["email"] = "human@example.invalid"
+        borrowed_email = json.loads(json.dumps(base))
+        borrowed_email["committer"]["login"] = "human"
+        author_is_not_the_bot = json.loads(json.dumps(base))
+        author_is_not_the_bot["author"]["login"] = "human"
+        author_email_is_not_the_bot = json.loads(json.dumps(base))
+        author_email_is_not_the_bot["commit"]["author"][
+            "email"
+        ] = "human@example.invalid"
+
+        for commits in (
+            [not_signed_by_github],
+            [invalid_signature],
+            [unverified],
+            [borrowed_login],
+            [borrowed_email],
+            [author_is_not_the_bot],
+            [author_email_is_not_the_bot],
+        ):
+            with self.subTest(commits=commits):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError):
+                    AUTO_LINT_PR.validate_branch_commits(commits)
+
     def test_branch_commits_require_exact_base_ancestry(self) -> None:
         base = "a" * 40
         tip = "b" * 40
