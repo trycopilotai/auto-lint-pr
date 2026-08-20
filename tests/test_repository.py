@@ -535,8 +535,22 @@ class LaunchSurfaceTest(unittest.TestCase):
                 check=False,
             ).returncode,
         )
+        # The invariant is that the evidence sits directly on top
+        # of the change it describes. Asking `HEAD^` only says that
+        # when HEAD is the manifest commit, which is true for a
+        # push to a branch and false on a pull request, where HEAD
+        # is a merge whose first parent is the base. Ask the
+        # manifest which commit carried it instead.
+        manifest_commit = run_git(
+            ROOT,
+            "log",
+            "-1",
+            "--format=%H",
+            "--",
+            "evidence/demo-manifest.json",
+        )
         self.assertEqual(
-            run_git(ROOT, "rev-parse", "HEAD^"),
+            run_git(ROOT, "rev-parse", f"{manifest_commit}^"),
             run["input_commit"],
         )
         self.assertEqual(

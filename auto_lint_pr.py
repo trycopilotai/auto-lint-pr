@@ -104,17 +104,62 @@ class CommandError(AutoLintError):
     """A formatter, hook, Git, or GitHub command failed."""
 
 
+PHASES = ("prepare", "verify", "publish")
+
+
+class PhaseAndPathParser(argparse.ArgumentParser):
+    """Split the phase from the paths after parsing, not during.
+
+    Python 3.11 matches positionals one contiguous run at a time,
+    so `prepare --language python src/a.py` gives the first run to
+    both positionals, leaves the paths in a later run with nothing
+    to match, and fails with `unrecognized arguments`. 3.12 changed
+    this. The supported versions therefore disagree about a command
+    line the tool documents, and the only one that rejected it was
+    the oldest one the matrix tests.
+
+    Collecting a single positional list and splitting it here
+    behaves identically on every supported version. The phase is
+    still validated, and still refused when it is not one of the
+    three, so nothing about the accepted command line changes.
+    """
+
+    def parse_args(self, args=None, namespace=None):  # type: ignore[override]
+        # `parse_known_args` is what makes the two runs reachable.
+        # Positionals separated by an option land in a later run
+        # that the declared positional has already been filled
+        # from, so they arrive here as leftovers instead.
+        parsed, leftover = self.parse_known_args(args, namespace)
+        unknown_options = [token for token in leftover if token.startswith("-")]
+        if unknown_options:
+            self.error("unrecognized arguments: " + " ".join(unknown_options))
+        words = list(getattr(parsed, "phase_and_paths", []))
+        words.extend(token for token in leftover if not token.startswith("-"))
+        phase = "prepare"
+        if words:
+            if words[0] not in PHASES:
+                self.error(
+                    "argument phase: invalid choice: "
+                    f"{words[0]!r} (choose from "
+                    + ", ".join(repr(name) for name in PHASES)
+                    + ")"
+                )
+            phase = words.pop(0)
+        parsed.phase = phase
+        parsed.paths = words
+        del parsed.phase_and_paths
+        return parsed
+
+
 def parser() -> argparse.ArgumentParser:
-    argument_parser = argparse.ArgumentParser(
+    argument_parser = PhaseAndPathParser(
         description="Format a repository and publish the exact delta as a PR",
     )
     argument_parser.add_argument(
-        "phase",
-        nargs="?",
-        choices=("prepare", "verify", "publish"),
-        default="prepare",
+        "phase_and_paths",
+        nargs="*",
+        metavar="[{prepare,verify,publish}] [paths ...]",
     )
-    argument_parser.add_argument("paths", nargs="*")
     argument_parser.add_argument("--cwd")
     argument_parser.add_argument("--workspace-root")
     argument_parser.add_argument("--lint-root")
