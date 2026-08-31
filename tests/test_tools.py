@@ -134,31 +134,55 @@ def make_unsigned_lint_release(directory: Path, tag: str) -> Path:
     return repository
 
 
+def current_version(root: Path) -> str:
+    manifest = json.loads(
+        (root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    return manifest["version"]
+
+
+def next_patch(version: str) -> str:
+    major, minor, patch = version.split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
+
+
 class BumpVersionTest(unittest.TestCase):
+    """Version-agnostic on purpose.
+
+    These tests derive every version from the checked-in plugin
+    manifest instead of hardcoding one, so that running the bump
+    tool for a real release does not turn this suite red at the
+    bumped version - which is exactly the commit the release tag
+    points at.
+    """
+
     def setUp(self) -> None:
         scratch = tempfile.TemporaryDirectory(prefix="bump-version-test-")
         self.addCleanup(scratch.cleanup)
         self.copy_root = Path(scratch.name)
         copy_tree(BUMP_FILES, self.copy_root)
         self.original = read_all(self.copy_root, BUMP_FILES)
+        self.old = current_version(self.copy_root)
+        self.new = next_patch(self.old)
+        self.after = next_patch(self.new)
 
     def test_bump_and_restore_round_trips(self) -> None:
-        bumped = run_tool(self.copy_root, "tools/bump_version.py", "0.1.1")
+        bumped = run_tool(self.copy_root, "tools/bump_version.py", self.new)
         self.assertEqual(0, bumped.returncode, bumped.stderr)
         plugin = (self.copy_root / ".claude-plugin" / "plugin.json").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"version": "0.1.1"', plugin)
+        self.assertIn(f'"version": "{self.new}"', plugin)
         readme = (self.copy_root / "README.md").read_text(encoding="utf-8")
-        self.assertEqual(2, readme.count("release=v0.1.1"))
-        self.assertEqual(1, readme.count("auto-lint-pr.yml@v0.1.1"))
+        self.assertEqual(2, readme.count(f"release=v{self.new}"))
+        self.assertEqual(1, readme.count(f"auto-lint-pr.yml@v{self.new}"))
         tests = (self.copy_root / "tests" / "test_repository.py").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(1, tests.count('"v0.1.1"'))
-        self.assertEqual(1, tests.count('"v0.1.2"'))
+        self.assertEqual(1, tests.count(f'"v{self.new}"'))
+        self.assertEqual(1, tests.count(f'"v{self.after}"'))
 
-        restored = run_tool(self.copy_root, "tools/bump_version.py", "0.1.0")
+        restored = run_tool(self.copy_root, "tools/bump_version.py", self.old)
         self.assertEqual(0, restored.returncode, restored.stderr)
         self.assertEqual(self.original, read_all(self.copy_root, BUMP_FILES))
 
@@ -166,19 +190,23 @@ class BumpVersionTest(unittest.TestCase):
         readme = self.copy_root / "README.md"
         text = readme.read_text(encoding="utf-8")
         readme.write_text(
-            text.replace("release=v0.1.0", "release=v9.9.9", 1),
+            text.replace(f"release=v{self.old}", "release=v9.9.9", 1),
             encoding="utf-8",
         )
         tampered = read_all(self.copy_root, BUMP_FILES)
 
-        completed = run_tool(self.copy_root, "tools/bump_version.py", "0.1.1")
+        completed = run_tool(self.copy_root, "tools/bump_version.py", self.new)
 
         self.assertNotEqual(0, completed.returncode)
         self.assertIn("standalone installs", completed.stderr)
         self.assertEqual(tampered, read_all(self.copy_root, BUMP_FILES))
 
     def test_bump_refuses_a_non_semantic_version(self) -> None:
-        completed = run_tool(self.copy_root, "tools/bump_version.py", "v0.1.1")
+        completed = run_tool(
+            self.copy_root,
+            "tools/bump_version.py",
+            f"v{self.new}",
+        )
 
         self.assertNotEqual(0, completed.returncode)
         self.assertEqual(self.original, read_all(self.copy_root, BUMP_FILES))
