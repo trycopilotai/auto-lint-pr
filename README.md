@@ -172,7 +172,10 @@ independent setting.
 The calling job must grant the workflow's write permissions
 because a reusable workflow cannot elevate the caller's
 token. `issues: write` is required for the optional labels
-input. Pin the signed release tag shown below:
+input. `packages: read` is also required because the prepare
+job prefetches the pinned formatter images, and a calling
+job that lists any permissions gets `none` for every
+unlisted scope. Pin the signed release tag shown below:
 
 ```yaml
 permissions:
@@ -183,6 +186,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      packages: read
       pull-requests: write
     uses: >-
       trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@v0.1.0
@@ -196,7 +200,25 @@ changes into the fresh verifier. The write-scoped job has no
 network checkout and accepts only the checksum-bound package
 from that verifier. These workflow identity fields are
 documented for GitHub Cloud and are not available on GitHub
-Enterprise Server.
+Enterprise Server. The publish phase also hardcodes
+`GH_HOST=github.com` when it accepts the write token
+(`require_token` in `auto_lint_pr.py`). Those are two
+independent GitHub Cloud dependencies, so GitHub Enterprise
+Server is unsupported end-to-end.
+
+### Docker-mode prerequisites
+
+The default `docker: true` mode formats with the pinned
+language images, so the runner must provide a Docker CLI and
+daemon at `/usr/bin/docker`; the prefetch step fails when it
+is absent. A runner without Docker must pass `docker: false`
+and provision the exact local formatter toolchain instead.
+
+The `ghcr.io/trycopilotai/lint-<language>` images are public
+and anonymously pullable, so the `registry_token` secret is
+needed only for private forks of those images. The prefetch
+step pulls only the exact `image@sha256:...` references
+recorded in `lint-release-manifest.json`.
 
 ## Comparison
 
