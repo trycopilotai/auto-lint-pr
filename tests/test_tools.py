@@ -34,10 +34,20 @@ REPIN_FILES = (
 
 
 def copy_tree(relatives: tuple[str, ...], destination: Path) -> None:
+    """Copy repository files into a fixture tree, normalized to LF.
+
+    The tools write LF and the repository commits LF, so the
+    round-trip contract is over LF bytes. A Windows working tree
+    can arrive CRLF-smudged by runner git configuration; that is a
+    checkout artifact, not tool behavior, so it is normalized away
+    at the copy boundary instead of failing the byte comparison.
+    """
+
     for relative in relatives:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / relative, target)
+        payload = (ROOT / relative).read_bytes().replace(b"\r\n", b"\n")
+        target.write_bytes(payload)
 
 
 def read_all(root: Path, relatives: tuple[str, ...]) -> dict[str, bytes]:
