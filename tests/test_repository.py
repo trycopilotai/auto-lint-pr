@@ -116,6 +116,37 @@ class WorkflowMetadataTest(unittest.TestCase):
         self.assertIn("actions/download-artifact@", text)
         prepare, remaining = text.split("\n  verify:\n", maxsplit=1)
         verify, publish = remaining.split("\n  publish:\n", maxsplit=1)
+        identity_guard = "- name: Require reusable workflow identity"
+        for job_name, job_text in (
+            ("prepare", prepare),
+            ("verify", verify),
+        ):
+            self.assertEqual(
+                1,
+                job_text.count(identity_guard),
+                job_name,
+            )
+            guard_index = job_text.index(identity_guard)
+            checkout_index = job_text.index(
+                "- name: Check out this action revision",
+                guard_index,
+            )
+            guard_step = job_text[guard_index:checkout_index]
+            self.assertIn(
+                'test -n "$WORKFLOW_REPOSITORY"',
+                guard_step,
+                job_name,
+            )
+            self.assertIn(
+                'test -n "$WORKFLOW_SHA"',
+                guard_step,
+                job_name,
+            )
+            self.assertIn(
+                "GitHub Enterprise Server",
+                guard_step,
+                job_name,
+            )
         self.assertNotIn('token: "${{ github.token }}"', prepare)
         self.assertNotIn('token: "${{ github.token }}"', verify)
         self.assertIn('token: "${{ github.token }}"', publish)

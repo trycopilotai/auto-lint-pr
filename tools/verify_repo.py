@@ -358,6 +358,30 @@ def verify_actions(files: list[Path]) -> None:
         raise ValueError("reusable workflow has no isolated publish job")
     prepare, remaining = reusable.split("\n  verify:\n", maxsplit=1)
     verify, publish = remaining.split("\n  publish:\n", maxsplit=1)
+    identity_guard = "- name: Require reusable workflow identity"
+    for job_name, job_text in (("prepare", prepare), ("verify", verify)):
+        if job_text.count(identity_guard) != 1:
+            raise ValueError(
+                f"{job_name} job does not guard the workflow identity checkout"
+            )
+        guard_index = job_text.index(identity_guard)
+        checkout_index = job_text.find(
+            "- name: Check out this action revision", guard_index
+        )
+        if checkout_index == -1:
+            raise ValueError(
+                f"{job_name} job identity guard must precede the action checkout"
+            )
+        guard_step = job_text[guard_index:checkout_index]
+        for required in (
+            'test -n "$WORKFLOW_REPOSITORY"',
+            'test -n "$WORKFLOW_SHA"',
+            "GitHub Enterprise Server",
+        ):
+            if required not in guard_step:
+                raise ValueError(
+                    f"{job_name} job identity guard is incomplete: {required}"
+                )
     if "packages: read" not in prepare:
         raise ValueError("prepare job cannot read private lint images")
     if "Prefetch private images by exact digest" not in prepare:
