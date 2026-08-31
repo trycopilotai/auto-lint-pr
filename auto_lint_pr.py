@@ -270,6 +270,10 @@ def parser() -> argparse.ArgumentParser:
     )
     argument_parser.add_argument("--verification")
     argument_parser.add_argument("--restore", action="store_true")
+    # Operator-only: directory for raw API request/response
+    # recordings. Never set in CI; the recordings feed the
+    # committed fixtures under tests/fixtures/github/.
+    argument_parser.add_argument("--record")
     argument_parser.add_argument(
         "--title",
         default="Apply automated formatting",
@@ -2290,6 +2294,64 @@ def normalize_repository(value: str) -> str:
     return value
 
 
+RECORD_DIRECTORY: Path | None = None
+RECORD_SEQUENCE = 0
+
+
+def scrub_recorded_value(value: Any) -> Any:
+    """Return a deep copy with file contents replaced.
+
+    Recorded requests exist so the test suite can compare its
+    stubs to what GitHub actually says. The base64 file payloads
+    inside a createCommitOnBranch input add consumer file bytes
+    without adding response shape, so they are dropped at record
+    time rather than trusted to a later sanitization pass.
+    """
+
+    if isinstance(value, dict):
+        scrubbed: dict[str, Any] = {}
+        for key, entry in value.items():
+            if key == "contents":
+                scrubbed[key] = "<omitted>"
+            else:
+                scrubbed[key] = scrub_recorded_value(entry)
+        return scrubbed
+    if isinstance(value, list):
+        return [scrub_recorded_value(entry) for entry in value]
+    return value
+
+
+def record_api_exchange(
+    arguments: Sequence[str],
+    input_value: Any | None,
+    completed: subprocess.CompletedProcess[str],
+) -> None:
+    """Write one request/response pair into the record directory.
+
+    The record deliberately excludes the process environment: the
+    token lives there and only there, so leaving the mapping out
+    entirely is what keeps a recording safe to read back.
+    """
+
+    global RECORD_SEQUENCE
+    if RECORD_DIRECTORY is None:
+        return
+    RECORD_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    RECORD_SEQUENCE += 1
+    record = {
+        "arguments": list(arguments),
+        "input": scrub_recorded_value(input_value),
+        "returncode": completed.returncode,
+        "stderr": completed.stderr,
+        "stdout": completed.stdout,
+    }
+    path = RECORD_DIRECTORY / f"{RECORD_SEQUENCE:04d}.json"
+    path.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def gh_api(
     arguments: Sequence[str],
     environment: Mapping[str, str],
@@ -2309,6 +2371,7 @@ def gh_api(
         stderr=subprocess.PIPE,
         text=True,
     )
+    record_api_exchange(arguments, input_value, completed)
     if completed.returncode != 0:
         raise CommandError(f"GitHub API failed: {completed.stderr.strip()}")
     if completed.stdout.strip() == "":
@@ -3236,7 +3299,10 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    global RECORD_DIRECTORY
     arguments = parser().parse_args(argv)
+    if arguments.record is not None:
+        RECORD_DIRECTORY = Path(arguments.record)
     try:
         result: dict[str, Any]
         if arguments.phase == "prepare":
