@@ -102,7 +102,10 @@ The executable contract lives in
 [`auto_lint_pr.py`](../auto_lint_pr.py),
 [`action.yml`](../action.yml), and the
 [`auto-lint-pr.yml`](../.github/workflows/auto-lint-pr.yml)
-reusable workflow. The refusal paths and branch transaction
-are covered by
+reusable workflow. The refusal paths are covered by
 [`tests/test_auto_lint_pr.py`](../tests/test_auto_lint_pr.py).
-Run `make verify` to re-derive the repository checks.
+That suite exercises the branch transaction against GitHub
+through mocked API responses only; live end-to-end coverage
+comes from a private consumer repository used as an
+end-to-end harness, not from tests in this suite. Run
+`make verify` to re-derive the repository checks.

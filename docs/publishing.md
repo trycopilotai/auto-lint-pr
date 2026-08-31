@@ -10,6 +10,11 @@ been performed.
   policy pinned by immutable commit in the release workflow;
   never read the trust policy from the release tag itself.
 - Run the complete repository check.
+- Confirm the end-to-end verification path is green: the CI
+  `pinned-lint` and `pinned-lint-docker` fixture jobs run
+  the token-free transaction on every push, and a private
+  consumer repository used as an end-to-end harness runs the
+  complete prepare-to-publish transaction against GitHub.
 - Create the deterministic source archive and checksums.
 - Keep the GitHub Release in draft state.
 - Confirm that no `latest` alias exists.
@@ -23,6 +28,12 @@ been performed.
   package before its credentialed project substep.
 - Confirm the target repository's Actions setting permits
   GitHub Actions to create pull requests.
+
+Publication targets github.com only: `require_token` in
+`auto_lint_pr.py` hardcodes `GH_HOST=github.com`, and the
+reusable workflow's identity fields are documented for
+GitHub Cloud, so GitHub Enterprise Server is unsupported
+end-to-end.
 
 Rerun GitHub-hosted artifact attestations against the public
 repository; attestations produced before publication do not
