@@ -40,8 +40,10 @@ GITHUB_SIGNER_EMAIL = "noreply@github.com"
 GITHUB_SIGNER_LOGIN = "web-flow"
 # A refusal that names no way forward strands the operator on the
 # failure they are most likely to hit first. Each remedy below
-# states only what a human may do; this tool never deletes
-# branches, so recovery from a stale branch is always a human act.
+# states only what a human may do. This tool never deletes
+# branches; it resets its own stale branch only when every
+# branch-only commit passes the bot-ownership and signature audit,
+# so a branch that fails that audit is always a human act.
 PR_CREATION_FORBIDDEN_MARKER = "is not permitted to create or approve pull requests"
 PR_CREATION_SETTING_MESSAGE = (
     "GitHub refused to let Actions open the pull request. Turn on "
@@ -150,6 +152,22 @@ def error_chain_text(error: BaseException) -> str:
 
 class SafetyError(AutoLintError):
     """A branch, pull request, or delta failed a safety check."""
+
+
+class StaleBranchError(SafetyError):
+    """A retained auto-lint branch no longer descends from the base.
+
+    The branch comparison found a status other than "ahead": the
+    base branch moved, by an ordinary push or by merging a previous
+    auto-lint pull request, while the tool's branch lingered. The
+    error carries the comparison's merge base so publish can audit
+    the branch-only commits and recover with an audited reset
+    instead of stranding the operator on a refusal.
+    """
+
+    def __init__(self, message: str, merge_base: str) -> None:
+        super().__init__(message)
+        self.merge_base = merge_base
 
 
 class DependencyError(AutoLintError):
@@ -2703,11 +2721,21 @@ def branch_commits(
         raise CommandError("branch comparison did not return an object")
     merge_base = value.get("merge_base_commit")
     if value.get("status") != "ahead":
-        raise SafetyError(
+        message = (
             "auto-lint branch does not descend from the exact base; "
             "the base branch moved after this branch was created; "
             + STALE_BRANCH_REMEDY
         )
+        merge_base_sha = None
+        if isinstance(merge_base, dict):
+            candidate = merge_base.get("sha")
+            if isinstance(candidate, str) and candidate != "":
+                merge_base_sha = candidate
+        if merge_base_sha is None:
+            # Without a merge base there is nothing to audit, so the
+            # refusal stands and recovery is not offered.
+            raise SafetyError(message)
+        raise StaleBranchError(message, merge_base_sha)
     if not isinstance(merge_base, dict) or merge_base.get("sha") != base:
         raise SafetyError(
             "auto-lint branch has a different merge base; " + STALE_BRANCH_REMEDY
@@ -2740,6 +2768,113 @@ def branch_commits(
         record["changed_paths"] = sorted(paths)
     validate_branch_commits(commits)
     return commits
+
+
+def audit_stale_branch_commits(
+    repository_name: str,
+    merge_base: str,
+    tip: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Audit ownership of every commit unique to a stale branch.
+
+    The comparison runs from the merge base rather than the new
+    base head, because a stale branch by definition does not
+    descend from the current base; the merge base is where its
+    unique commits begin. The changed-paths check that
+    `branch_commits` applies does not run here: those commits
+    carried a previous run's prepared delta, and their content is
+    about to be discarded by the reset, so ownership and GitHub
+    signatures are the load-bearing checks. The identity gates and
+    the 100-commit audit bound are the same ones every other branch
+    audit uses.
+    """
+
+    value = gh_api(
+        [
+            "--method",
+            "GET",
+            f"repos/{repository_name}/compare/{merge_base}...{tip}"
+            "?per_page=100&page=1",
+        ],
+        environment,
+    )
+    if not isinstance(value, dict):
+        raise CommandError("branch comparison did not return an object")
+    commits = value.get("commits")
+    total = value.get("total_commits")
+    if not isinstance(commits, list) or not isinstance(total, int):
+        raise CommandError("branch comparison has invalid commit metadata")
+    if total != len(commits):
+        raise SafetyError("auto-lint branch exceeds the 100-commit audit bound")
+    if not commits:
+        # A branch with no unique commits is behind the base: its tip
+        # is already an ancestor of main, so a reset discards nothing.
+        # This is the routine shape after a merged auto-lint pull
+        # request whose branch was never deleted, and it needs no
+        # ownership proof because there is no unique content to own.
+        return
+    for record in commits:
+        oid = record.get("sha")
+        if not isinstance(oid, str):
+            raise CommandError("branch comparison commit has no object ID")
+        record["github_signature"] = github_commit_signature(
+            repository_name,
+            oid,
+            environment,
+        )
+    validate_branch_commits(commits)
+
+
+def recover_stale_branch(
+    repository_name: str,
+    branch: str,
+    base_head: str,
+    tip: str,
+    merge_base: str,
+    environment: Mapping[str, str],
+) -> None:
+    """Reset a fully audited stale auto-lint branch to the base head.
+
+    This tool still never deletes a branch. It may move its own
+    branch, and only after every branch-only commit has proved bot
+    ownership and a GitHub signature through the audit above; a
+    single commit that fails that audit leaves the existing refusal
+    in place. The ref update must be forced because the stale
+    branch does not descend from the base. Re-reading the tip
+    afterwards closes the race window the forced update opens: a
+    writer that moves the branch between the reset and the re-read
+    is detected here, and one that moves it after the re-read still
+    fails atomically at `create_signed_commit`'s expected head.
+    """
+
+    audit_stale_branch_commits(
+        repository_name,
+        merge_base,
+        tip,
+        environment,
+    )
+    gh_api(
+        [
+            "--method",
+            "PATCH",
+            f"repos/{repository_name}/git/refs/heads/{branch}",
+        ],
+        environment,
+        input_value={"force": True, "sha": base_head},
+    )
+    reset_tip = remote_tip(repository_name, branch, environment)
+    if reset_tip != base_head:
+        raise SafetyError(
+            "auto-lint branch moved during its stale-branch reset; "
+            "no commit attempted"
+        )
+    print(
+        f"stale-branch recovery: reset {branch} from stale tip {tip} "
+        f"to base {base_head} after every branch-only commit passed "
+        "the bot-ownership and signature audit",
+        file=sys.stderr,
+    )
 
 
 def git_blob_object_id(payload: bytes) -> str:
@@ -3084,62 +3219,81 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                 + STALE_BRANCH_REMEDY
             )
         else:
-            branch_commits(
-                repository_name,
-                state["base_head"],
-                tip,
-                {record["path"] for record in state["delta"]},
-                environment,
-            )
-            branch_tree = remote_tree(repository_name, tip, environment)
-            if validate_existing_branch_tree(
-                base_tree,
-                branch_tree,
-                state["delta"],
-            ):
-                if pull_request is None:
-                    published_commit = tip
-                else:
-                    number = pull_request.get("number")
-                    if not isinstance(number, int):
-                        raise CommandError(
-                            "pull request response is missing its number"
+            recovered_from_stale_branch = False
+            try:
+                branch_commits(
+                    repository_name,
+                    state["base_head"],
+                    tip,
+                    {record["path"] for record in state["delta"]},
+                    environment,
+                )
+            except StaleBranchError as stale:
+                # The audited reset leaves the branch at the base
+                # head, so publication proceeds exactly as it does
+                # for a freshly created branch: `expected_head` stays
+                # at the base head and the signed commit lands on the
+                # reset branch. An open matching pull request, already
+                # validated above, simply follows the branch.
+                recover_stale_branch(
+                    repository_name,
+                    branch,
+                    state["base_head"],
+                    tip,
+                    stale.merge_base,
+                    environment,
+                )
+                recovered_from_stale_branch = True
+            if not recovered_from_stale_branch:
+                branch_tree = remote_tree(repository_name, tip, environment)
+                if validate_existing_branch_tree(
+                    base_tree,
+                    branch_tree,
+                    state["delta"],
+                ):
+                    if pull_request is None:
+                        published_commit = tip
+                    else:
+                        number = pull_request.get("number")
+                        if not isinstance(number, int):
+                            raise CommandError(
+                                "pull request response is missing its number"
+                            )
+                        require_remote_base_tip(
+                            repository_name,
+                            state["base"],
+                            state["base_head"],
+                            environment,
                         )
-                    require_remote_base_tip(
-                        repository_name,
-                        state["base"],
-                        state["base_head"],
-                        environment,
-                    )
-                    apply_labels_and_reviewers(
-                        repository_name,
-                        number,
-                        arguments.label,
-                        arguments.reviewer,
-                        environment,
-                    )
-                    pull_request = revalidate_publication(
-                        repository_name,
-                        state["base"],
-                        state["base_head"],
-                        branch,
-                        tip,
-                        environment,
-                    )
-                    number = pull_request.get("number")
-                    if not isinstance(number, int):
-                        raise CommandError(
-                            "pull request response is missing its number"
+                        apply_labels_and_reviewers(
+                            repository_name,
+                            number,
+                            arguments.label,
+                            arguments.reviewer,
+                            environment,
                         )
-                    result = {
-                        "changed": False,
-                        "pull_request": number,
-                        "schema": 1,
-                    }
-                    write_action_output("changed", "false")
-                    write_action_output("pull-request", str(number))
-                    return result
-            expected_head = tip
+                        pull_request = revalidate_publication(
+                            repository_name,
+                            state["base"],
+                            state["base_head"],
+                            branch,
+                            tip,
+                            environment,
+                        )
+                        number = pull_request.get("number")
+                        if not isinstance(number, int):
+                            raise CommandError(
+                                "pull request response is missing its number"
+                            )
+                        result = {
+                            "changed": False,
+                            "pull_request": number,
+                            "schema": 1,
+                        }
+                        write_action_output("changed", "false")
+                        write_action_output("pull-request", str(number))
+                        return result
+                expected_head = tip
     else:
         create_remote_branch(
             repository_name,

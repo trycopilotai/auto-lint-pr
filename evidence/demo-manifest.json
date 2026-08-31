@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "820f9a6af5a14bf31559366849ebecb506394de1cf6ff345b9c2831dc0b17d2e"
+    "sha256": "a92ae466efedf810e1cdfdc1580ca37cc099f3c549c3c65d13bfbf56fd3af06f"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -30,8 +30,8 @@
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
-    "input_commit": "f71ceebe9fc72924c9f1bc94715cb5b25eba6df2",
-    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit f71ceebe9fc72924c9f1bc94715cb5b25eba6df2 --agent Claude --agent-version 'Claude Fable 5' --evidence-date 2026-08-31",
+    "input_commit": "24161e09c47b708709137534d59a122df973ea30",
+    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit 24161e09c47b708709137534d59a122df973ea30 --agent Claude --agent-version 'Claude Fable 5' --evidence-date 2026-08-31",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
     "protocol_sha256": "45aca39fde292b644c7c351082782708716d1403aa10b8edd6b645d6b5d21c42"
   },
