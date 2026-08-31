@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "1829f6002ad229624c9044c38b656bda3332863f123e9b3b94f2e7098906e670"
+    "sha256": "71243585ae392d16fa6fb4d52fb83b5db25091c228800046a2ed6fc34a44227a"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -25,20 +25,20 @@
   },
   "run": {
     "agent": "Claude",
-    "agent_version": "Claude Opus 5",
-    "date": "2026-08-19",
+    "agent_version": "Claude Fable 5",
+    "date": "2026-08-31",
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
-    "input_commit": "b193b2a4c9118b5eeee164e980e0330bcc7d9047",
-    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit b193b2a4c9118b5eeee164e980e0330bcc7d9047 --agent Claude --agent-version 'Claude Opus 5' --evidence-date 2026-08-19",
+    "input_commit": "a67eede3cf8669cfe3ac2b69f2cb51cd0b48e573",
+    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit a67eede3cf8669cfe3ac2b69f2cb51cd0b48e573 --agent Claude --agent-version 'Claude Fable 5' --evidence-date 2026-08-31",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
-    "protocol_sha256": "ebc65bfb76510db8a739ce310dcc2f44ce55582638cdcdc2d5340ba3dd20cf8f"
+    "protocol_sha256": "45aca39fde292b644c7c351082782708716d1403aa10b8edd6b645d6b5d21c42"
   },
   "schema": 1,
   "skill": {
     "path": "skills/auto-lint-pr/SKILL.md",
-    "sha256": "ebc65bfb76510db8a739ce310dcc2f44ce55582638cdcdc2d5340ba3dd20cf8f"
+    "sha256": "45aca39fde292b644c7c351082782708716d1403aa10b8edd6b645d6b5d21c42"
   },
   "social_preview": {
     "path": "assets/social-preview.png",
