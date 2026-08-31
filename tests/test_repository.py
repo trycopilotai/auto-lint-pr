@@ -198,9 +198,15 @@ class WorkflowMetadataTest(unittest.TestCase):
                     "LINT_LANGUAGES": payload,
                 }
             )
+            bash = shutil.which("bash")
+            if bash is None:
+                self.skipTest(
+                    "the reusable workflow runs this step under bash, "
+                    "and this host has no bash executable"
+                )
             subprocess.run(
                 [
-                    "/bin/bash",
+                    bash,
                     "-c",
                     'set -- --languages "$LINT_LANGUAGES"; '
                     'printf "%s\\0" "$@" >"$ARGUMENT_LOG"',
