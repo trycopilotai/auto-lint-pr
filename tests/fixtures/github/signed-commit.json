@@ -1,0 +1,45 @@
+{
+  "recorded": {
+    "date": "2026-08-31",
+    "source": "GitHub REST commit and GraphQL signature responses for a commit created by createCommitOnBranch through the reusable workflow in a private consumer repository used as an end-to-end harness",
+    "sanitized": [
+      "repository name",
+      "commit object IDs",
+      "timestamps",
+      "tree and parent records"
+    ],
+    "preserved": [
+      "author.login",
+      "committer.login",
+      "commit.author.email",
+      "commit.committer.email",
+      "commit.verification.verified",
+      "github_signature.isValid",
+      "github_signature.wasSignedByGitHub"
+    ]
+  },
+  "author": {
+    "login": "github-actions[bot]"
+  },
+  "committer": {
+    "login": "web-flow"
+  },
+  "commit": {
+    "author": {
+      "email": "41898282+github-actions[bot]@users.noreply.github.com",
+      "name": "github-actions[bot]"
+    },
+    "committer": {
+      "email": "noreply@github.com",
+      "name": "GitHub"
+    },
+    "verification": {
+      "reason": "valid",
+      "verified": true
+    }
+  },
+  "github_signature": {
+    "isValid": true,
+    "wasSignedByGitHub": true
+  }
+}
