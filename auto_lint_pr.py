@@ -38,6 +38,36 @@ BOT_LOGIN = "github-actions[bot]"
 # the signature and not before.
 GITHUB_SIGNER_EMAIL = "noreply@github.com"
 GITHUB_SIGNER_LOGIN = "web-flow"
+# A refusal that names no way forward strands the operator on the
+# failure they are most likely to hit first. Each remedy below
+# states only what a human may do; this tool never deletes
+# branches, so recovery from a stale branch is always a human act.
+PR_CREATION_FORBIDDEN_MARKER = "is not permitted to create or approve pull requests"
+PR_CREATION_SETTING_MESSAGE = (
+    "GitHub refused to let Actions open the pull request. Turn on "
+    '"Allow GitHub Actions to create and approve pull requests" in '
+    "the repository or organization Actions settings. The "
+    "publication branch and its signed commit already exist, so "
+    "rerunning publish once the setting is on completes the "
+    "publication."
+)
+CONTENTS_WRITE_MESSAGE = (
+    "branch creation was refused with HTTP 403; the calling "
+    "workflow job must grant contents: write, because a reusable "
+    "workflow cannot elevate the caller's token"
+)
+STALE_BRANCH_REMEDY = (
+    "delete or rename the auto-lint branch and rerun; this tool "
+    "never deletes branches"
+)
+EXISTING_PR_REMEDY = (
+    "close that pull request or align it with this base and head, " "then rerun"
+)
+CREATED_COMMIT_REMEDY = (
+    "the commit this tool just created failed identity validation; "
+    "GitHub's signing identity may have changed, so report this "
+    "instead of deleting anything"
+)
 TOKEN_NAMES = (
     "GITHUB_TOKEN",
     "GH_TOKEN",
@@ -99,6 +129,23 @@ LINT_LANGUAGE_IDS = frozenset(
 
 class AutoLintError(Exception):
     """Base error for the auto-lint transaction."""
+
+
+def error_chain_text(error: BaseException) -> str:
+    """Return the error text joined with every chained cause.
+
+    Wrapping layers preserve the underlying GitHub diagnostic in
+    `__cause__` but `str(error)` shows only the outermost message.
+    Refusal handling matches against the whole chain so a marker in
+    the original API text is still reachable after re-wrapping.
+    """
+
+    parts: list[str] = []
+    current: BaseException | None = error
+    while current is not None:
+        parts.append(str(current))
+        current = current.__cause__
+    return "; ".join(parts)
 
 
 class SafetyError(AutoLintError):
@@ -2213,7 +2260,9 @@ def select_existing_pull_request(
     actual_base = base_record.get("ref")
     actual_head = head_record.get("ref")
     if actual_base != base or actual_head != branch:
-        raise SafetyError("existing pull request does not match base and head")
+        raise SafetyError(
+            "existing pull request does not match base and head; " + EXISTING_PR_REMEDY
+        )
     head_repository = head_record.get("repo")
     if not isinstance(head_repository, dict):
         raise SafetyError("existing pull request has no head repository")
@@ -2410,48 +2459,61 @@ def committed_by_bot_or_github(login: Any, email: Any) -> bool:
     return login == GITHUB_SIGNER_LOGIN and email == GITHUB_SIGNER_EMAIL
 
 
-def validate_branch_commits(commits: list[dict[str, Any]]) -> None:
-    """Require every branch-only commit to be signed and bot-owned."""
+def validate_branch_commits(
+    commits: list[dict[str, Any]],
+    remedy: str = STALE_BRANCH_REMEDY,
+) -> None:
+    """Require every branch-only commit to be signed and bot-owned.
+
+    Two call paths share these checks: the audit of an existing
+    auto-lint branch, where deleting the stale branch is the way
+    forward, and `verify_created_commit` on a commit this tool just
+    made, where deletion fixes nothing. The caller names the remedy
+    that is true for its own path.
+    """
+
+    def refuse(message: str) -> None:
+        raise SafetyError(message + "; " + remedy)
 
     if not commits:
-        raise SafetyError("existing auto-lint branch has no unique commits")
+        refuse("existing auto-lint branch has no unique commits")
     for record in commits:
         author = record.get("author")
         committer = record.get("committer")
         commit = record.get("commit")
         if not isinstance(author, dict) or author.get("login") != BOT_LOGIN:
-            raise SafetyError("auto-lint branch has a non-bot author")
+            refuse("auto-lint branch has a non-bot author")
         if not isinstance(commit, dict):
-            raise SafetyError("auto-lint branch commit metadata is missing")
+            refuse("auto-lint branch commit metadata is missing")
         raw_author = commit.get("author")
         raw_committer = commit.get("committer")
         verification = commit.get("verification")
         signature = record.get("github_signature")
         if not isinstance(raw_author, dict):
-            raise SafetyError("auto-lint branch author metadata is missing")
+            refuse("auto-lint branch author metadata is missing")
         if raw_author.get("email") != BOT_EMAIL:
-            raise SafetyError("auto-lint branch author email is not the bot")
+            refuse("auto-lint branch author email is not the bot")
         if not isinstance(verification, dict):
-            raise SafetyError("auto-lint branch signature metadata is missing")
+            refuse("auto-lint branch signature metadata is missing")
         if verification.get("verified") is not True:
-            raise SafetyError("auto-lint branch commit is not verified")
+            refuse("auto-lint branch commit is not verified")
         if not isinstance(signature, dict):
-            raise SafetyError("auto-lint branch has no GitHub signature proof")
+            refuse("auto-lint branch has no GitHub signature proof")
         if signature.get("isValid") is not True:
-            raise SafetyError("auto-lint branch GitHub signature is invalid")
+            refuse("auto-lint branch GitHub signature is invalid")
         if signature.get("wasSignedByGitHub") is not True:
-            raise SafetyError("auto-lint branch was not signed by GitHub")
+            refuse("auto-lint branch was not signed by GitHub")
         # Deliberately after the signature checks. GitHub's signing
         # identity is only an acceptable committer because the three
         # assertions above have already established that GitHub, and
         # not a person, produced this commit.
         if not isinstance(committer, dict) or not isinstance(raw_committer, dict):
-            raise SafetyError("auto-lint branch committer metadata is missing")
+            refuse("auto-lint branch committer metadata is missing")
         if not committed_by_bot_or_github(
             committer.get("login"),
             raw_committer.get("email"),
         ):
-            raise SafetyError(
+            refuse(
                 "auto-lint branch has a non-bot committer: "
                 + str(committer.get("login"))
             )
@@ -2578,9 +2640,15 @@ def branch_commits(
         raise CommandError("branch comparison did not return an object")
     merge_base = value.get("merge_base_commit")
     if value.get("status") != "ahead":
-        raise SafetyError("auto-lint branch does not descend from the exact base")
+        raise SafetyError(
+            "auto-lint branch does not descend from the exact base; "
+            "the base branch moved after this branch was created; "
+            + STALE_BRANCH_REMEDY
+        )
     if not isinstance(merge_base, dict) or merge_base.get("sha") != base:
-        raise SafetyError("auto-lint branch has a different merge base")
+        raise SafetyError(
+            "auto-lint branch has a different merge base; " + STALE_BRANCH_REMEDY
+        )
     commits = value.get("commits")
     total = value.get("total_commits")
     if not isinstance(commits, list) or not isinstance(total, int):
@@ -2770,6 +2838,8 @@ def create_remote_branch(
             environment,
         )
     except AutoLintError as error:
+        if "HTTP 403" in error_chain_text(error):
+            raise SafetyError(CONTENTS_WRITE_MESSAGE) from error
         raise SafetyError(
             "branch creation outcome is ambiguous; no commit attempted"
         ) from error
@@ -2855,7 +2925,7 @@ def verify_created_commit(
     if not isinstance(metadata, dict):
         raise CommandError("created commit metadata is invalid")
     metadata["github_signature"] = signature
-    validate_branch_commits([metadata])
+    validate_branch_commits([metadata], remedy=CREATED_COMMIT_REMEDY)
 
 
 def apply_labels_and_reviewers(
@@ -2946,7 +3016,10 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
     expected_head = state["base_head"]
     if tip is not None:
         if tip == state["base_head"] and pull_request is None:
-            raise SafetyError("existing auto-lint branch has no ownership proof")
+            raise SafetyError(
+                "existing auto-lint branch has no ownership proof; "
+                + STALE_BRANCH_REMEDY
+            )
         else:
             branch_commits(
                 repository_name,
@@ -3118,13 +3191,19 @@ def run_publish(arguments: argparse.Namespace) -> dict[str, Any]:
                         published_commit,
                     )
             except AutoLintError as reconciliation_error:
+                if PR_CREATION_FORBIDDEN_MARKER in error_chain_text(error):
+                    raise SafetyError(PR_CREATION_SETTING_MESSAGE) from error
+                # The reconciliation error carries the chain; the
+                # creation error would otherwise be lost with it, so
+                # its text is folded into the message.
                 raise SafetyError(
                     "pull request creation outcome is ambiguous; "
-                    "publication branch retained"
+                    "publication branch retained; creation failed "
+                    "with: " + error_chain_text(error)
                 ) from reconciliation_error
-            if pull_request is not None:
-                pass
-            else:
+            if pull_request is None:
+                if PR_CREATION_FORBIDDEN_MARKER in error_chain_text(error):
+                    raise SafetyError(PR_CREATION_SETTING_MESSAGE) from error
                 raise SafetyError(
                     "pull request creation outcome is ambiguous; "
                     "publication branch retained"
@@ -3170,6 +3249,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SafetyError("unsupported transaction phase")
     except AutoLintError as error:
         print(str(error), file=sys.stderr)
+        cause = error.__cause__
+        while cause is not None:
+            print("caused by: " + str(cause), file=sys.stderr)
+            cause = cause.__cause__
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

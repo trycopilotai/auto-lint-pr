@@ -1218,6 +1218,45 @@ class BranchSafetyTest(unittest.TestCase):
                 prepared,
             )
 
+    def test_stale_branch_refusal_names_the_remedy(self) -> None:
+        base = "a" * 40
+        tip = "b" * 40
+        diverged = {
+            "commits": [],
+            "merge_base_commit": {"sha": base},
+            "status": "diverged",
+            "total_commits": 0,
+        }
+        with mock.patch.object(AUTO_LINT_PR, "gh_api", return_value=diverged):
+            with self.assertRaises(AUTO_LINT_PR.SafetyError) as context:
+                AUTO_LINT_PR.branch_commits(
+                    "owner/repository",
+                    base,
+                    tip,
+                    {"one.txt"},
+                    {"GH_TOKEN": "token"},
+                )
+        message = str(context.exception)
+        self.assertIn("does not descend from the exact base", message)
+        self.assertIn("the base branch moved", message)
+        self.assertTrue(message.endswith(AUTO_LINT_PR.STALE_BRANCH_REMEDY))
+
+    def test_validate_branch_commits_names_the_call_path_remedy(self) -> None:
+        with self.assertRaises(AUTO_LINT_PR.SafetyError) as existing:
+            AUTO_LINT_PR.validate_branch_commits([])
+        self.assertTrue(
+            str(existing.exception).endswith(AUTO_LINT_PR.STALE_BRANCH_REMEDY)
+        )
+
+        with self.assertRaises(AUTO_LINT_PR.SafetyError) as created:
+            AUTO_LINT_PR.validate_branch_commits(
+                [],
+                remedy=AUTO_LINT_PR.CREATED_COMMIT_REMEDY,
+            )
+        self.assertTrue(
+            str(created.exception).endswith(AUTO_LINT_PR.CREATED_COMMIT_REMEDY)
+        )
+
 
 class TransactionTest(unittest.TestCase):
     def test_prepare_formats_with_credentials_removed(self) -> None:
@@ -3445,6 +3484,190 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
                     "outcome is ambiguous",
                 ):
                     AUTO_LINT_PR.run_publish(arguments)
+
+    def _publish_after_pr_creation_failure(
+        self,
+        creation_error: Exception,
+        reconciliation_side_effect: Any,
+    ) -> AUTO_LINT_PR.SafetyError:
+        """Run publish into a failed PR creation; return the refusal."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            initialize_repository(repository)
+            sample = repository / "sample.txt"
+            sample.write_text("before\n", encoding="utf-8", newline="\n")
+            head = commit_all(repository)
+            sample.write_text("after\n", encoding="utf-8", newline="\n")
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": head,
+                        "branch": "auto-lint/main",
+                        "changed": True,
+                        "cwd": str(repository),
+                        "delta": AUTO_LINT_PR.delta_records(repository),
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
+                        "repository": "owner/repository",
+                        "schema": 2,
+                    }
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            write_default_verification_receipt(repository, state_path)
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            published_tree = {"sample.txt": blob_record(b"after\n")}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    side_effect=[[], reconciliation_side_effect],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, None, "signed-commit", head],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, published_tree],
+                ),
+                mock.patch.object(AUTO_LINT_PR, "create_remote_branch"),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                    return_value=("signed-commit", {"isValid": True}),
+                ),
+                mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    side_effect=creation_error,
+                ),
+            ):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError) as context:
+                    AUTO_LINT_PR.run_publish(arguments)
+        return context.exception
+
+    def test_publish_names_the_pr_creation_setting_on_forbidden(self) -> None:
+        creation_error = AUTO_LINT_PR.CommandError(
+            "GitHub API failed: GitHub Actions is not permitted to "
+            "create or approve pull requests (HTTP 403)"
+        )
+        error = self._publish_after_pr_creation_failure(creation_error, [])
+        self.assertEqual(
+            AUTO_LINT_PR.PR_CREATION_SETTING_MESSAGE,
+            str(error),
+        )
+
+    def test_publish_names_the_setting_when_reconciliation_fails_too(
+        self,
+    ) -> None:
+        creation_error = AUTO_LINT_PR.CommandError(
+            "GitHub API failed: GitHub Actions is not permitted to "
+            "create or approve pull requests (HTTP 403)"
+        )
+        error = self._publish_after_pr_creation_failure(
+            creation_error,
+            AUTO_LINT_PR.CommandError("reconciliation query failed"),
+        )
+        self.assertEqual(
+            AUTO_LINT_PR.PR_CREATION_SETTING_MESSAGE,
+            str(error),
+        )
+
+    def test_publish_folds_the_creation_error_into_a_double_failure(
+        self,
+    ) -> None:
+        error = self._publish_after_pr_creation_failure(
+            AUTO_LINT_PR.CommandError("request failed"),
+            AUTO_LINT_PR.CommandError("reconciliation query failed"),
+        )
+        message = str(error)
+        self.assertIn("outcome is ambiguous", message)
+        self.assertIn("creation failed with: request failed", message)
+
+    def test_branch_creation_403_names_the_missing_permission(self) -> None:
+        with mock.patch.object(
+            AUTO_LINT_PR,
+            "gh_api",
+            side_effect=AUTO_LINT_PR.CommandError(
+                "GitHub API failed: gh: Resource not accessible by "
+                "integration (HTTP 403)"
+            ),
+        ):
+            with self.assertRaises(AUTO_LINT_PR.SafetyError) as context:
+                AUTO_LINT_PR.create_remote_branch(
+                    "owner/repository",
+                    "auto-lint/main",
+                    "a" * 40,
+                    {"GH_TOKEN": "token"},
+                )
+        self.assertEqual(
+            AUTO_LINT_PR.CONTENTS_WRITE_MESSAGE,
+            str(context.exception),
+        )
+
+    def test_branch_creation_stays_ambiguous_without_a_403(self) -> None:
+        with mock.patch.object(
+            AUTO_LINT_PR,
+            "gh_api",
+            side_effect=AUTO_LINT_PR.CommandError("GitHub API failed: boom"),
+        ):
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "outcome is ambiguous",
+            ):
+                AUTO_LINT_PR.create_remote_branch(
+                    "owner/repository",
+                    "auto-lint/main",
+                    "a" * 40,
+                    {"GH_TOKEN": "token"},
+                )
+
+    def test_main_prints_the_cause_chain(self) -> None:
+        def failing_prepare(arguments: Any) -> dict[str, Any]:
+            try:
+                try:
+                    raise AUTO_LINT_PR.CommandError("root failure")
+                except AUTO_LINT_PR.CommandError as root:
+                    raise AUTO_LINT_PR.CommandError("api failed") from root
+            except AUTO_LINT_PR.CommandError as middle:
+                raise AUTO_LINT_PR.SafetyError("outer refusal") from middle
+
+        with mock.patch.object(
+            AUTO_LINT_PR,
+            "run_prepare",
+            side_effect=failing_prepare,
+        ):
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                status = AUTO_LINT_PR.main(["prepare", "--lint-root", "/unused"])
+
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "outer refusal\n" "caused by: api failed\n" "caused by: root failure\n",
+            error.getvalue(),
+        )
 
     def test_publish_retains_new_branch_when_remote_tree_differs(
         self,
