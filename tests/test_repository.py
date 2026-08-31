@@ -350,6 +350,14 @@ class WorkflowMetadataTest(unittest.TestCase):
         )
         self.assertIn("formatter-must-not-receive", workflow)
         self.assertIn('state["lint_release"]["images"][name]', workflow)
+        self.assertIn(
+            'if digest != manifest["images"][name]:',
+            workflow,
+        )
+        self.assertIn(
+            "transaction digest does not equal the recorded manifest digest",
+            workflow,
+        )
         self.assertNotIn("lint-requirements:v", workflow)
 
     def test_transitional_lint_manifest_is_rejected(self) -> None:
