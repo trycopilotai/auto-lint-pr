@@ -55,12 +55,17 @@ Grant only:
 permissions:
   contents: write
   issues: write
+  packages: read
   pull-requests: write
 ```
 
 Place these permissions on the calling job. A reusable
 workflow cannot elevate the caller's token permissions.
 `issues: write` is required when labels are requested.
+`packages: read` is required because the prepare job
+prefetches the pinned formatter images, and a calling job
+that lists any permissions gets `none` for every unlisted
+scope; omitting it fails the run at startup.
 
 Before the first run, confirm the repository or organization
 Actions setting **Allow GitHub Actions to create and approve
