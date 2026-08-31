@@ -81,8 +81,17 @@ delta only if its expected-head commit still matches the
 branch tip.
 
 Ambiguous mutation failures retain the publication branch so
-a later run can audit and reconcile it. The transaction does
-not attempt a race-prone automatic branch deletion.
+a later run can audit and reconcile it. The transaction
+still never deletes a branch. When the retained branch no
+longer descends from the current base, publication may
+instead reset that branch to the current base head, and
+only after every branch-only commit back to the merge base
+passes the same bot-ownership and GitHub-signature audit;
+a commit that fails that audit leaves the existing refusal
+in place for a human. After the forced reset the tool
+re-reads the branch tip and refuses unless it equals the
+base head, so a concurrent writer cannot slip a commit
+into the window the reset opens.
 
 If the existing branch already contains the exact prepared
 delta, a retry does not create another commit. It still

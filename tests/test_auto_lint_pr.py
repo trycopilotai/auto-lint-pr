@@ -4021,6 +4021,457 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
             create_commit.assert_not_called()
 
+    def _write_stale_recovery_state(
+        self,
+        directory: Path,
+        repository: Path,
+    ) -> tuple[str, list[dict[str, str]], Path]:
+        """Create a consumer checkout, its state file, and its receipt."""
+
+        initialize_repository(repository)
+        sample = repository / "sample.txt"
+        sample.write_text("before\n", encoding="utf-8", newline="\n")
+        head = commit_all(repository)
+        sample.write_text("after\n", encoding="utf-8", newline="\n")
+        delta = AUTO_LINT_PR.delta_records(repository)
+        state_path = directory / "state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "base": "main",
+                    "base_head": head,
+                    "branch": "auto-lint/main",
+                    "changed": True,
+                    "cwd": str(repository),
+                    "delta": delta,
+                    "lint_commit": TEST_LINT_COMMIT,
+                    "lint_release": lint_release_record(),
+                    "repository": "owner/repository",
+                    "schema": 2,
+                }
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        write_default_verification_receipt(repository, state_path)
+        return head, delta, state_path
+
+    def _bot_branch_commit(self, sha: str) -> dict[str, object]:
+        return {
+            "author": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "committer": {"login": AUTO_LINT_PR.BOT_LOGIN},
+            "commit": {
+                "author": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "committer": {"email": AUTO_LINT_PR.BOT_EMAIL},
+                "verification": {"verified": True},
+            },
+            "sha": sha,
+        }
+
+    def _diverged_comparison(self) -> dict[str, object]:
+        return {
+            "commits": [],
+            "merge_base_commit": {"sha": "merge-base"},
+            "status": "diverged",
+            "total_commits": 0,
+        }
+
+    def _clean_audit_comparison(self) -> dict[str, object]:
+        return {
+            "commits": [self._bot_branch_commit("stale-tip")],
+            "merge_base_commit": {"sha": "merge-base"},
+            "status": "ahead",
+            "total_commits": 1,
+        }
+
+    def _reset_calls(self, api: mock.Mock) -> list[mock.call]:
+        return [called for called in api.call_args_list if "PATCH" in called.args[0]]
+
+    def test_publish_resets_diverged_bot_branch_and_creates_pull_request(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            head, delta, state_path = self._write_stale_recovery_state(
+                Path(directory),
+                repository,
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            published_tree = {"sample.txt": blob_record(b"after\n")}
+            pull_request = {
+                "base": {"ref": "main", "sha": head},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                    "sha": "signed-commit",
+                },
+                "number": 21,
+            }
+            signature = {"isValid": True, "wasSignedByGitHub": True}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    side_effect=[[], [pull_request]],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[
+                        head,
+                        "stale-tip",
+                        head,
+                        "signed-commit",
+                        head,
+                        head,
+                        "signed-commit",
+                    ],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, published_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "github_commit_signature",
+                    return_value=signature,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                    return_value=("signed-commit", {"isValid": True}),
+                ) as create_commit,
+                mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    side_effect=[
+                        self._diverged_comparison(),
+                        self._clean_audit_comparison(),
+                        {},
+                        pull_request,
+                    ],
+                ) as api,
+            ):
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    result = AUTO_LINT_PR.run_publish(arguments)
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(21, result["pull_request"])
+            reset_calls = self._reset_calls(api)
+            self.assertEqual(1, len(reset_calls))
+            self.assertIn(
+                "repos/owner/repository/git/refs/heads/auto-lint/main",
+                reset_calls[0].args[0],
+            )
+            self.assertEqual(
+                {"force": True, "sha": head},
+                reset_calls[0].kwargs["input_value"],
+            )
+            create_commit.assert_called_once_with(
+                "owner/repository",
+                "auto-lint/main",
+                head,
+                delta,
+                "Apply automated formatting",
+                {"GH_TOKEN": "token"},
+            )
+            request = api.call_args.args[0]
+            self.assertIn("repos/owner/repository/pulls", request)
+            self.assertIn("stale-branch recovery", error.getvalue())
+
+    def test_publish_refuses_stale_branch_with_a_human_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            head, delta, state_path = self._write_stale_recovery_state(
+                Path(directory),
+                repository,
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            human = self._bot_branch_commit("stale-tip")
+            human["author"] = {"login": "human"}
+            tainted_audit = self._clean_audit_comparison()
+            tainted_audit["commits"] = [human]
+            signature = {"isValid": True, "wasSignedByGitHub": True}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, "stale-tip"],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    return_value=base_tree,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "github_commit_signature",
+                    return_value=signature,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                ) as create_commit,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    side_effect=[
+                        self._diverged_comparison(),
+                        tainted_audit,
+                    ],
+                ) as api,
+            ):
+                with self.assertRaises(AUTO_LINT_PR.SafetyError) as context:
+                    AUTO_LINT_PR.run_publish(arguments)
+
+            message = str(context.exception)
+            self.assertIn("non-bot author", message)
+            self.assertTrue(message.endswith(AUTO_LINT_PR.STALE_BRANCH_REMEDY))
+            self.assertEqual([], self._reset_calls(api))
+            create_commit.assert_not_called()
+
+    def test_publish_resets_diverged_branch_and_reuses_matching_pull_request(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            head, delta, state_path = self._write_stale_recovery_state(
+                Path(directory),
+                repository,
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            published_tree = {"sample.txt": blob_record(b"after\n")}
+            pull_before = {
+                "base": {"ref": "main", "sha": head},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                    "sha": "stale-tip",
+                },
+                "number": 4,
+            }
+            pull_after = json.loads(json.dumps(pull_before))
+            pull_after["head"]["sha"] = "signed-commit"
+            signature = {"isValid": True, "wasSignedByGitHub": True}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    side_effect=[[pull_before], [pull_after], [pull_after]],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[
+                        head,
+                        "stale-tip",
+                        head,
+                        "signed-commit",
+                        head,
+                        head,
+                        "signed-commit",
+                    ],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, published_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "github_commit_signature",
+                    return_value=signature,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                    return_value=("signed-commit", {"isValid": True}),
+                ) as create_commit,
+                mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    side_effect=[
+                        self._diverged_comparison(),
+                        self._clean_audit_comparison(),
+                        {},
+                    ],
+                ) as api,
+            ):
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    result = AUTO_LINT_PR.run_publish(arguments)
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(4, result["pull_request"])
+            self.assertEqual(1, len(self._reset_calls(api)))
+            self.assertEqual(3, api.call_count)
+            create_commit.assert_called_once_with(
+                "owner/repository",
+                "auto-lint/main",
+                head,
+                delta,
+                "Apply automated formatting",
+                {"GH_TOKEN": "token"},
+            )
+
+    def test_publish_refuses_when_reset_branch_tip_does_not_return_to_base(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            head, delta, state_path = self._write_stale_recovery_state(
+                Path(directory),
+                repository,
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            signature = {"isValid": True, "wasSignedByGitHub": True}
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    return_value=[],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[head, "stale-tip", "hijacked-tip"],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    return_value=base_tree,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "github_commit_signature",
+                    return_value=signature,
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                ) as create_commit,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    side_effect=[
+                        self._diverged_comparison(),
+                        self._clean_audit_comparison(),
+                        {},
+                    ],
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    AUTO_LINT_PR.SafetyError,
+                    "moved during its stale-branch reset",
+                ):
+                    AUTO_LINT_PR.run_publish(arguments)
+
+            create_commit.assert_not_called()
+
+    def test_stale_branch_recovery_logs_one_stderr_line(self) -> None:
+        signature = {"isValid": True, "wasSignedByGitHub": True}
+        with (
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "gh_api",
+                side_effect=[self._clean_audit_comparison(), {}],
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "github_commit_signature",
+                return_value=signature,
+            ),
+            mock.patch.object(
+                AUTO_LINT_PR,
+                "remote_tip",
+                return_value="base-head",
+            ),
+        ):
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                AUTO_LINT_PR.recover_stale_branch(
+                    "owner/repository",
+                    "auto-lint/main",
+                    "base-head",
+                    "stale-tip",
+                    "merge-base",
+                    {"GH_TOKEN": "token"},
+                )
+
+        lines = error.getvalue().splitlines()
+        self.assertEqual(1, len(lines))
+        line = lines[0]
+        self.assertIn("stale-branch recovery", line)
+        self.assertIn("auto-lint/main", line)
+        self.assertIn("stale-tip", line)
+        self.assertIn("base-head", line)
+        self.assertIn("audit", line)
+
 
 class OutputTest(unittest.TestCase):
     def test_action_output_is_appended(self) -> None:
