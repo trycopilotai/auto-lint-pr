@@ -53,6 +53,21 @@ def lint_release_record() -> dict[str, object]:
     }
 
 
+def hook_quote(value: str) -> str:
+    """Quote one path for the hook's platform shell.
+
+    Hooks run through shell=True, which is /bin/sh on POSIX and
+    cmd.exe on Windows. cmd.exe treats single quotes as literal
+    characters, so POSIX shlex quoting breaks every Windows path;
+    double quotes are understood by both shells for the paths
+    these fixtures build.
+    """
+
+    if os.name == "nt":
+        return '"' + value + '"'
+    return shlex.quote(value)
+
+
 def run_git(repository: Path, *arguments: str) -> str:
     completed = subprocess.run(
         ["git", *arguments],
@@ -1466,8 +1481,8 @@ subprocess.run(
             )
             hook_command = " ".join(
                 [
-                    shlex.quote(sys.executable),
-                    shlex.quote(str(hook)),
+                    hook_quote(sys.executable),
+                    hook_quote(str(hook)),
                 ]
             )
             state_path = root / "state.json"
@@ -1740,8 +1755,8 @@ Path("generated.txt").write_text("generated\\n", encoding="utf-8", newline="\\n"
             )
             hook_command = " ".join(
                 [
-                    shlex.quote(sys.executable),
-                    shlex.quote(str(hook)),
+                    hook_quote(sys.executable),
+                    hook_quote(str(hook)),
                 ]
             )
             state = root / "state.json"
@@ -1799,8 +1814,8 @@ subprocess.run(["git", "commit", "-m", "hidden"], check=True)
             )
             hook_command = " ".join(
                 [
-                    shlex.quote(sys.executable),
-                    shlex.quote(str(hook)),
+                    hook_quote(sys.executable),
+                    hook_quote(str(hook)),
                 ]
             )
             arguments = prepare_arguments(
@@ -1932,9 +1947,9 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             commit_all(repository)
             filter_command = " ".join(
                 [
-                    shlex.quote(sys.executable),
-                    shlex.quote(str(filter_script)),
-                    shlex.quote(str(capture)),
+                    hook_quote(sys.executable),
+                    hook_quote(str(filter_script)),
+                    hook_quote(str(capture)),
                 ]
             )
             sample.write_text("prepared\n", encoding="utf-8", newline="\n")
