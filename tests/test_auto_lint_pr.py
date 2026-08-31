@@ -67,6 +67,12 @@ def run_git(repository: Path, *arguments: str) -> str:
 def initialize_repository(repository: Path) -> None:
     repository.mkdir()
     run_git(repository, "init", "-q", "-b", "main")
+    # Fixture bytes are LF on every platform. Windows hosts set
+    # core.autocrlf=true in the system Git configuration, while
+    # the tool under test isolates that configuration away, so
+    # without a repository-local setting the two sides disagree
+    # about working-tree bytes and archive checksums.
+    run_git(repository, "config", "core.autocrlf", "false")
     run_git(repository, "config", "user.name", "Fixture Author")
     run_git(
         repository,
@@ -1397,7 +1403,15 @@ class TransactionTest(unittest.TestCase):
             commit_all(repository)
             verification = root / "verification"
             subprocess.run(
-                ["git", "clone", "-q", str(repository), str(verification)],
+                [
+                    "git",
+                    "clone",
+                    "-q",
+                    "-c",
+                    "core.autocrlf=false",
+                    str(repository),
+                    str(verification),
+                ],
                 check=True,
             )
             run_git(repository, "mv", "source.txt", "destination.txt")
@@ -1482,7 +1496,15 @@ subprocess.run(
             )
             verification = root / "verification"
             subprocess.run(
-                ["git", "clone", "-q", str(consumer), str(verification)],
+                [
+                    "git",
+                    "clone",
+                    "-q",
+                    "-c",
+                    "core.autocrlf=false",
+                    str(consumer),
+                    str(verification),
+                ],
                 check=True,
             )
             receipt_path = root / "verified.json"
@@ -2136,6 +2158,11 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
 
             self.assertFalse((Path(directory) / "outside.txt").exists())
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "exercises the directory-descriptor restoration path, "
+        "which os.supports_dir_fd rules out on Windows",
+    )
     def test_restore_does_not_follow_a_swapped_parent_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

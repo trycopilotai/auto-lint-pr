@@ -182,7 +182,7 @@ def bump(new: str) -> None:
     old = current_version()
     sources = build_sources(old, new)
     for relative, text in sources.items():
-        (ROOT / relative).write_text(text, encoding="utf-8")
+        (ROOT / relative).write_text(text, encoding="utf-8", newline="\n")
     print(
         json.dumps(
             {"new": new, "old": old, "status": "ok"},
