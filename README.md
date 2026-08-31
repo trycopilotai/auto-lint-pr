@@ -206,6 +206,43 @@ Enterprise Server. The publish phase also hardcodes
 independent GitHub Cloud dependencies, so GitHub Enterprise
 Server is unsupported end-to-end.
 
+### Post-format hook example
+
+The optional `hook` input runs one consumer command in the
+prepare job after formatting. A repository whose generated
+files must track formatted sources can regenerate them in
+the same transaction, so the formatter delta and the
+regenerated files land in one pull request. Add a `with:`
+block to the pinned reusable-workflow call shown above:
+
+```yaml
+with:
+  hook: "python3 tools/build_index.py"
+```
+
+The hook shares the formatter's token-free child
+environment. `GITHUB_TOKEN`, `GH_TOKEN`,
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, and
+`ACTIONS_RUNTIME_TOKEN` are removed before it starts, along
+with the runner command-file paths, so a hook that needs a
+credential cannot run in the prepare phase. The write token
+exists only in the publish job, and that job does not rerun
+the formatter or the hook. This repository's CI pins the
+contract with a fixture hook that fails unless every one of
+those token variables is unset (`.github/workflows/ci.yml`).
+
+Files the hook rewrites join the recorded delta exactly like
+formatter output. The hook must leave its changes
+uncommitted: prepare fails when the base checkout `HEAD`
+moves during token-free preparation, so a hook that commits
+stops the transaction.
+
+A non-zero hook exit fails the prepare job before any branch
+or pull request operation, so a generator or check that
+rejects its input stops the run with no publication. Review
+the hook as repository code because its output can become
+part of the formatting pull request.
+
 ### Docker-mode prerequisites
 
 The default `docker: true` mode formats with the pinned
