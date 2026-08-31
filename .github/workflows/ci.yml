@@ -284,4 +284,13 @@ jobs:
           digest = state["lint_release"]["images"][name]
           if not digest.startswith("sha256:"):
               raise SystemExit("transaction did not bind the image digest")
+          manifest = json.loads(
+              Path("lint-release-manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          if digest != manifest["images"][name]:
+              raise SystemExit(
+                  "transaction digest does not equal the recorded manifest digest"
+              )
           PY

@@ -330,6 +330,8 @@ def verify_actions(files: list[Path]) -> None:
         'DOCKER_CONFIG: "${{ runner.temp }}/docker-clean"',
         "formatter-must-not-receive",
         'state["lint_release"]["images"][name]',
+        'if digest != manifest["images"][name]:',
+        "transaction digest does not equal the recorded manifest digest",
     ):
         if required not in continuous_integration:
             raise ValueError(f"CI token-free fixture is missing: {required}")
