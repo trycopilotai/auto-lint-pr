@@ -193,7 +193,7 @@ def verify_plugins() -> None:
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("name") != "auto-lint-pr":
             raise ValueError(f"wrong plugin name: {relative}")
-        if value.get("version") != "0.1.0":
+        if value.get("version") != "0.1.1":
             raise ValueError(f"wrong plugin version: {relative}")
         if value.get("description") != readme_claim():
             raise ValueError(
@@ -562,7 +562,7 @@ def verify_launch_surface() -> None:
     if "<full-commit-sha>" in readme:
         raise ValueError("README retains an unresolved commit placeholder")
     if (
-        "trycopilotai/auto-lint-pr/.github/workflows/" "auto-lint-pr.yml@v0.1.0"
+        "trycopilotai/auto-lint-pr/.github/workflows/" "auto-lint-pr.yml@v0.1.1"
     ) not in readme:
         raise ValueError("README reusable workflow install is not pinned")
 
