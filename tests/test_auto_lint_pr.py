@@ -4196,6 +4196,107 @@ sys.stdout.buffer.write(sys.stdin.buffer.read())
             self.assertIn("repos/owner/repository/pulls", request)
             self.assertIn("stale-branch recovery", error.getvalue())
 
+    def test_publish_resets_a_fully_merged_behind_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "consumer"
+            head, delta, state_path = self._write_stale_recovery_state(
+                Path(directory),
+                repository,
+            )
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "publish",
+                    "--state",
+                    str(state_path),
+                    "--repository",
+                    "owner/repository",
+                ]
+            )
+            base_tree = {"sample.txt": blob_record(b"before\n")}
+            published_tree = {"sample.txt": blob_record(b"after\n")}
+            pull_request = {
+                "base": {"ref": "main", "sha": head},
+                "head": {
+                    "ref": "auto-lint/main",
+                    "repo": {"full_name": "owner/repository"},
+                    "sha": "signed-commit",
+                },
+                "number": 22,
+            }
+            behind = {
+                "commits": [],
+                "merge_base_commit": {"sha": "stale-tip"},
+                "status": "behind",
+                "total_commits": 0,
+            }
+            empty_audit = {
+                "commits": [],
+                "merge_base_commit": {"sha": "stale-tip"},
+                "status": "identical",
+                "total_commits": 0,
+            }
+            with (
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "require_token",
+                    return_value={"GH_TOKEN": "token"},
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "open_pull_requests",
+                    side_effect=[[], [pull_request]],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tip",
+                    side_effect=[
+                        head,
+                        "stale-tip",
+                        head,
+                        "signed-commit",
+                        head,
+                        head,
+                        "signed-commit",
+                    ],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "remote_tree",
+                    side_effect=[base_tree, published_tree],
+                ),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "github_commit_signature",
+                ) as signature_lookup,
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "create_signed_commit",
+                    return_value=("signed-commit", {"isValid": True}),
+                ),
+                mock.patch.object(AUTO_LINT_PR, "verify_created_commit"),
+                mock.patch.object(
+                    AUTO_LINT_PR,
+                    "gh_api",
+                    side_effect=[
+                        behind,
+                        empty_audit,
+                        {},
+                        pull_request,
+                    ],
+                ) as api,
+            ):
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    result = AUTO_LINT_PR.run_publish(arguments)
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(22, result["pull_request"])
+            self.assertEqual(1, len(self._reset_calls(api)))
+            # A behind branch has no unique commits, so the audit has
+            # nothing to sign-check and must not look any commit up.
+            signature_lookup.assert_not_called()
+            self.assertIn("stale-branch recovery", error.getvalue())
+
     def test_publish_refuses_stale_branch_with_a_human_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory) / "consumer"

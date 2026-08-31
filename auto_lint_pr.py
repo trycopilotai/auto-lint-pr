@@ -2807,6 +2807,13 @@ def audit_stale_branch_commits(
         raise CommandError("branch comparison has invalid commit metadata")
     if total != len(commits):
         raise SafetyError("auto-lint branch exceeds the 100-commit audit bound")
+    if not commits:
+        # A branch with no unique commits is behind the base: its tip
+        # is already an ancestor of main, so a reset discards nothing.
+        # This is the routine shape after a merged auto-lint pull
+        # request whose branch was never deleted, and it needs no
+        # ownership proof because there is no unique content to own.
+        return
     for record in commits:
         oid = record.get("sha")
         if not isinstance(oid, str):
