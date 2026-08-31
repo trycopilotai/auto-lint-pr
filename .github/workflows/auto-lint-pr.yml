@@ -112,6 +112,25 @@ jobs:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: dependencies/lint
+      - name: Require reusable workflow identity
+        env:
+          WORKFLOW_REPOSITORY:
+            "${{ job.workflow_repository }}"
+          WORKFLOW_SHA: "${{ job.workflow_sha }}"
+        shell: bash
+        run: |
+          if test -n "$WORKFLOW_REPOSITORY" &&
+            test -n "$WORKFLOW_SHA"; then
+            exit 0
+          fi
+          printf '%s\n' \
+            "job.workflow_repository or job.workflow_sha is empty." \
+            "These reusable-workflow identity fields are documented" \
+            "for GitHub Cloud only, so an empty value usually means" \
+            "this workflow is running on GitHub Enterprise Server," \
+            "where the action-revision checkout would silently fetch" \
+            "the caller repository at its default branch instead." >&2
+          exit 1
       - name: Check out this action revision
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -239,6 +258,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: workspace
+      - name: Require reusable workflow identity
+        env:
+          WORKFLOW_REPOSITORY:
+            "${{ job.workflow_repository }}"
+          WORKFLOW_SHA: "${{ job.workflow_sha }}"
+        shell: bash
+        run: |
+          if test -n "$WORKFLOW_REPOSITORY" &&
+            test -n "$WORKFLOW_SHA"; then
+            exit 0
+          fi
+          printf '%s\n' \
+            "job.workflow_repository or job.workflow_sha is empty." \
+            "These reusable-workflow identity fields are documented" \
+            "for GitHub Cloud only, so an empty value usually means" \
+            "this workflow is running on GitHub Enterprise Server," \
+            "where the action-revision checkout would silently fetch" \
+            "the caller repository at its default branch instead." >&2
+          exit 1
       - name: Check out this action revision
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
