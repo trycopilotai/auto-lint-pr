@@ -108,6 +108,9 @@ def command(phase: str) -> list[str]:
     hook = os.environ.get("INPUT_HOOK", "")
     if hook != "":
         arguments.extend(["--hook", hook])
+    print_width = os.environ.get("INPUT_PRINT_WIDTH", "")
+    if print_width != "":
+        arguments.extend(["--print-width", print_width])
     paths = os.environ.get("INPUT_PATHS", "")
     files_from0 = os.environ.get("INPUT_FILES_FROM0", "")
     modified = boolean_input("INPUT_MODIFIED")

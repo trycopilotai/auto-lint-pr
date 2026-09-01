@@ -54,6 +54,7 @@ class ActionMetadataTest(unittest.TestCase):
             "paths:",
             "files-from0:",
             "languages:",
+            "print-width:",
             "hook:",
             "labels:",
             "reviewers:",

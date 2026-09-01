@@ -59,6 +59,11 @@ inputs:
     description: "Comma-separated lint language ids"
     required: false
     default: ""
+  print-width:
+    description:
+      "Positive line width forwarded to the pinned lint run"
+    required: false
+    default: ""
   hook:
     description:
       "Token-free consumer command after formatting"
@@ -126,6 +131,7 @@ runs:
         INPUT_LANGUAGES: "${{ inputs.languages }}"
         INPUT_MODIFIED: "${{ inputs.modified }}"
         INPUT_PATHS: "${{ inputs.paths }}"
+        INPUT_PRINT_WIDTH: "${{ inputs.print-width }}"
         INPUT_REVIEWERS: "${{ inputs.reviewers }}"
         INPUT_TITLE: "${{ inputs.title }}"
         INPUT_TOKEN: ""
