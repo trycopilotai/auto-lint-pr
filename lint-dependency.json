@@ -1,12 +1,12 @@
 {
   "allowed_signers_sha256": "986887b24aba7609ef5086f1571de978bc2dbcd5f952efc21dbb127e9c1205f7",
-  "commit": "7856512a84d96ff796cc10975e219b5b2a0836f3",
+  "commit": "3c4322bf89aedcd1c5ce5b8cc37c24be63dd09c1",
   "manifest": "lint-release-manifest.json",
-  "manifest_sha256": "313d245dc85d9bd0aafd2614e71fe238e6700884e4ffc7bf0edebfa00f672b99",
-  "ref": "refs/tags/v0.1.7",
+  "manifest_sha256": "018d0ebc1843b85d34d2f3978ec749640ab3b8bbcba681ffd8dab73130c26166",
+  "ref": "refs/tags/v0.1.8",
   "repository": "https://github.com/trycopilotai/lint",
   "schema": 2,
   "signer": "trycopilotai-release",
-  "tag_object": "db4807fc428cf5696fa5d6725ea048a9569613a6",
-  "tree": "f17bf3b94bcf0f7aef01774d3fe0215d36d9fdd9"
+  "tag_object": "87c9c3bbc1455310c33bcf6ca5c34c2c1137008f",
+  "tree": "08f606081b260aa6a49b5c415ae3cd5a5d5ca220"
 }

@@ -18,12 +18,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LINT_COMMIT = "7856512a84d96ff796cc10975e219b5b2a0836f3"
+LINT_COMMIT = "3c4322bf89aedcd1c5ce5b8cc37c24be63dd09c1"
 LINT_MANIFEST = "lint-release-manifest.json"
-LINT_REF = "refs/tags/v0.1.7"
+LINT_REF = "refs/tags/v0.1.8"
 LINT_REPOSITORY = "https://github.com/trycopilotai/lint"
-LINT_TAG_OBJECT = "db4807fc428cf5696fa5d6725ea048a9569613a6"
-LINT_TREE = "f17bf3b94bcf0f7aef01774d3fe0215d36d9fdd9"
+LINT_TAG_OBJECT = "87c9c3bbc1455310c33bcf6ca5c34c2c1137008f"
+LINT_TREE = "08f606081b260aa6a49b5c415ae3cd5a5d5ca220"
 LINT_ALLOWED_SIGNERS_SHA256 = (
     "986887b24aba7609ef5086f1571de978bc2dbcd5f952efc21dbb127e9c1205f7"
 )
