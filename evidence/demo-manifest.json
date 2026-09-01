@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "a92ae466efedf810e1cdfdc1580ca37cc099f3c549c3c65d13bfbf56fd3af06f"
+    "sha256": "ba20d8ee070003b537eef75085fd0fbf071f2dda77e4ccd7d06125a312fda592"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -26,12 +26,12 @@
   "run": {
     "agent": "Claude",
     "agent_version": "Claude Fable 5",
-    "date": "2026-08-31",
+    "date": "2026-09-01",
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
-    "input_commit": "24161e09c47b708709137534d59a122df973ea30",
-    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit 24161e09c47b708709137534d59a122df973ea30 --agent Claude --agent-version 'Claude Fable 5' --evidence-date 2026-08-31",
+    "input_commit": "c58f62d9d3e59a9c498a6bda667e527d0d353d8e",
+    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit c58f62d9d3e59a9c498a6bda667e527d0d353d8e --agent Claude --agent-version 'Claude Fable 5' --evidence-date 2026-09-01",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
     "protocol_sha256": "45aca39fde292b644c7c351082782708716d1403aa10b8edd6b645d6b5d21c42"
   },
