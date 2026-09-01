@@ -270,6 +270,7 @@ def parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
     )
+    argument_parser.add_argument("--print-width")
     argument_parser.add_argument("--hook")
     argument_parser.add_argument("--base", default="main")
     argument_parser.add_argument("--repository")
@@ -457,6 +458,14 @@ def lint_command(
         command.extend(["--image-manifest", str(image_manifest)])
     for language in arguments.language:
         command.extend(["--language", language])
+    if arguments.print_width is not None:
+        if not arguments.print_width.isascii():
+            raise SafetyError("print width must be a positive integer")
+        if not arguments.print_width.isdigit():
+            raise SafetyError("print width must be a positive integer")
+        if int(arguments.print_width) < 1:
+            raise SafetyError("print width must be a positive integer")
+        command.extend(["--print-width", arguments.print_width])
     if arguments.modified:
         command.append("--modified")
     elif arguments.files_from0 is not None:

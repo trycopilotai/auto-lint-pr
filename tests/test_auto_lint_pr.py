@@ -318,6 +318,7 @@ class CommandTest(unittest.TestCase):
         self.assertNotIn("--modified", command)
         self.assertIn("--image-manifest", command)
         self.assertNotIn("ghcr.io/trycopilotai/lint-", " ".join(command))
+        self.assertNotIn("--print-width", command)
 
     def test_local_backend_is_explicit(self) -> None:
         arguments = AUTO_LINT_PR.parser().parse_args(
@@ -369,6 +370,41 @@ class CommandTest(unittest.TestCase):
         self.assertIn("src/a.py", command)
         self.assertIn("docs/a.md", command)
         self.assertNotIn("--all", command)
+
+    def test_print_width_passes_through(self) -> None:
+        arguments = AUTO_LINT_PR.parser().parse_args(
+            [
+                "prepare",
+                "--lint-root",
+                "/lint",
+                "--print-width",
+                "120",
+            ]
+        )
+
+        command = AUTO_LINT_PR.lint_command(arguments, Path("/manifest.json"))
+
+        self.assertEqual(
+            "120",
+            command[command.index("--print-width") + 1],
+        )
+
+    def test_print_width_rejects_non_positive_values(self) -> None:
+        for value in ("0", "-1", "12.5", "abc", "", "١٢٣"):
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "prepare",
+                    "--lint-root",
+                    "/lint",
+                    f"--print-width={value}",
+                ]
+            )
+
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "print width must be a positive integer",
+            ):
+                AUTO_LINT_PR.lint_command(arguments, Path("/manifest.json"))
 
     def test_files_from0_passes_through(self) -> None:
         arguments = AUTO_LINT_PR.parser().parse_args(
@@ -1315,6 +1351,33 @@ class TransactionTest(unittest.TestCase):
             self.assertEqual(
                 ["sample.txt"],
                 [record["path"] for record in result["delta"]],
+            )
+
+    def test_prepare_accepts_a_print_width(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lint_root = root / "lint"
+            manifest = write_lint_fixture(lint_root)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            sample = consumer / "sample.txt"
+            sample.write_text("needs-formatting\n", encoding="utf-8", newline="\n")
+            commit_all(consumer)
+            state = root / "state.json"
+            arguments = prepare_arguments(
+                consumer,
+                lint_root,
+                manifest,
+                state,
+                extra=["--print-width", "120"],
+            )
+
+            result = AUTO_LINT_PR.run_prepare(arguments)
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(
+                "formatted\n",
+                sample.read_text(encoding="utf-8"),
             )
 
     def test_prepare_executes_materialized_commit_after_checkout_race(self) -> None:

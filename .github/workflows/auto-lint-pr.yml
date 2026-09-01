@@ -39,6 +39,12 @@ on:
         required: false
         type: string
         default: ""
+      print-width:
+        description:
+          "Positive line width for the pinned lint run"
+        required: false
+        type: string
+        default: ""
       hook:
         description: "Token-free command after formatting"
         required: false
@@ -222,6 +228,7 @@ jobs:
           paths: "${{ inputs.paths }}"
           files-from0: "${{ inputs.files-from0 }}"
           languages: "${{ inputs.languages }}"
+          print-width: "${{ inputs.print-width }}"
           hook: "${{ inputs.hook }}"
           labels: "${{ inputs.labels }}"
           reviewers: "${{ inputs.reviewers }}"

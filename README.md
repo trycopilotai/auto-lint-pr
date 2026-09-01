@@ -149,18 +149,21 @@ them, and then supplies the write token:
 ```
 
 The action exposes `workspace-root`, `docker`, `modified`,
-`paths`, `files-from0`, `languages`, `hook`, `labels`,
-`reviewers`, `title`, and `body` inputs. Action phases
-reject a `cwd` that resolves outside `workspace-root`. The
-reusable workflow at `.github/workflows/auto-lint-pr.yml`
-supplies the complete three-job artifact bridge, fresh
-read-only checkouts, its permission ceiling, and
-per-repository/base concurrency. Its optional
-`checkout_token` secret is used only to read private
-dependency repositories. Its optional `registry_token`
-secret must have package-read access and is used only for
-the isolated GHCR prefetch. Publication always uses the
-calling repository's `github.token`.
+`paths`, `files-from0`, `languages`, `print-width`, `hook`,
+`labels`, `reviewers`, `title`, and `body` inputs. The
+optional `print-width` input forwards `--print-width` to the
+pinned lint run; it applies to the prettier formatter family
+and requires a pinned lint release that supports the option.
+Action phases reject a `cwd` that resolves outside
+`workspace-root`. The reusable workflow at
+`.github/workflows/auto-lint-pr.yml` supplies the complete
+three-job artifact bridge, fresh read-only checkouts, its
+permission ceiling, and per-repository/base concurrency. Its
+optional `checkout_token` secret is used only to read
+private dependency repositories. Its optional
+`registry_token` secret must have package-read access and is
+used only for the isolated GHCR prefetch. Publication always
+uses the calling repository's `github.token`.
 
 ## Reusable workflow
 
