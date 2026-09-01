@@ -450,7 +450,7 @@ class WorkflowMetadataTest(unittest.TestCase):
                 sys.executable,
                 str(ROOT / "tools" / "verify_release.py"),
                 "--ref",
-                "v0.1.1",
+                "v0.1.2",
             ],
             cwd=ROOT,
             check=False,
@@ -460,7 +460,7 @@ class WorkflowMetadataTest(unittest.TestCase):
                 sys.executable,
                 str(ROOT / "tools" / "verify_release.py"),
                 "--ref",
-                "v0.1.2",
+                "v0.1.3",
             ],
             cwd=ROOT,
             check=False,
@@ -476,7 +476,7 @@ class InstallMetadataTest(unittest.TestCase):
     def test_product_installs_pin_the_release_tag(self) -> None:
         text = (ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual(text.count("release=v0.1.1"), 2)
+        self.assertEqual(text.count("release=v0.1.2"), 2)
         self.assertIn(
             "/auto-lint-pr/archive/refs/tags/$release.tar.gz",
             text,
@@ -487,7 +487,7 @@ class InstallMetadataTest(unittest.TestCase):
 
         self.assertNotIn("<full-commit-sha>", text)
         self.assertIn(
-            "trycopilotai/auto-lint-pr/.github/workflows/" "auto-lint-pr.yml@v0.1.1",
+            "trycopilotai/auto-lint-pr/.github/workflows/" "auto-lint-pr.yml@v0.1.2",
             text,
         )
 

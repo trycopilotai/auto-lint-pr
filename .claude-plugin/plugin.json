@@ -1,6 +1,6 @@
 {
   "name": "auto-lint-pr",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Turn pinned trycopilotai/lint formatter output into a reviewable pull request without granting the formatter step a write token.",
   "author": {
     "name": "trycopilot.ai"

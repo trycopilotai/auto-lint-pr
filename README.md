@@ -192,7 +192,7 @@ jobs:
       packages: read
       pull-requests: write
     uses: >-
-      trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@v0.1.1
+      trycopilotai/auto-lint-pr/.github/workflows/auto-lint-pr.yml@v0.1.2
 ```
 
 The called jobs check out this repository at
@@ -378,7 +378,7 @@ are not part of that metric.
 Install the pinned standalone skill without authentication:
 
 ```sh
-release=v0.1.1
+release=v0.1.2
 archive="$(mktemp -d)"
 target="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/auto-lint-pr"
 install -d "$target"
@@ -404,7 +404,7 @@ Install the same pinned skill into the Codex skill store
 without authentication:
 
 ```sh
-release=v0.1.1
+release=v0.1.2
 archive="$(mktemp -d)"
 target="${CODEX_HOME:-$HOME/.codex}/skills/auto-lint-pr"
 install -d "$target"
