@@ -139,6 +139,43 @@ class ActionCommandTest(unittest.TestCase):
             command[command.index("--print-width") + 1],
         )
 
+    def test_print_width_is_stripped_before_forwarding(self) -> None:
+        environment = {
+            "GITHUB_ACTION_PATH": str(ROOT),
+            "GITHUB_REPOSITORY": "owner/repository",
+            "LINT_ROOT": "/lint",
+            "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
+            "INPUT_BASE": "main",
+            "INPUT_CWD": ".",
+            "INPUT_DOCKER": "true",
+            "INPUT_PRINT_WIDTH": " 120 ",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            command = ENTRYPOINT.command("prepare")
+
+        self.assertEqual(
+            "120",
+            command[command.index("--print-width") + 1],
+        )
+
+    def test_whitespace_only_print_width_is_omitted(self) -> None:
+        environment = {
+            "GITHUB_ACTION_PATH": str(ROOT),
+            "GITHUB_REPOSITORY": "owner/repository",
+            "LINT_ROOT": "/lint",
+            "STATE_PATH": "/state.json",
+            "VERIFICATION_PATH": "/verified.json",
+            "INPUT_BASE": "main",
+            "INPUT_CWD": ".",
+            "INPUT_DOCKER": "true",
+            "INPUT_PRINT_WIDTH": "   ",
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            command = ENTRYPOINT.command("prepare")
+
+        self.assertNotIn("--print-width", command)
+
     def test_empty_print_width_is_omitted(self) -> None:
         environment = {
             "GITHUB_ACTION_PATH": str(ROOT),

@@ -108,7 +108,9 @@ def command(phase: str) -> list[str]:
     hook = os.environ.get("INPUT_HOOK", "")
     if hook != "":
         arguments.extend(["--hook", hook])
-    print_width = os.environ.get("INPUT_PRINT_WIDTH", "")
+    # Stripped so a quoted workflow value like " 120" behaves the
+    # same here as through lint's own action, which also strips.
+    print_width = os.environ.get("INPUT_PRINT_WIDTH", "").strip()
     if print_width != "":
         arguments.extend(["--print-width", print_width])
     paths = os.environ.get("INPUT_PATHS", "")

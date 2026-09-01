@@ -79,8 +79,14 @@ def replace_counted(
 
 
 def fetch_manifest_with_gh(tag: str, directory: Path) -> Path:
-    """Download the release manifest asset with the gh CLI."""
+    """Download the release manifest asset with the gh CLI.
 
+    lint names the asset release-manifest-<version>.json, not the
+    repository-local lint-release-manifest.json this tool writes;
+    the first repin against a real release failed on that mismatch.
+    """
+
+    asset_name = f"release-manifest-{tag.lstrip('v')}.json"
     subprocess.run(
         [
             "gh",
@@ -90,13 +96,13 @@ def fetch_manifest_with_gh(tag: str, directory: Path) -> Path:
             "-R",
             LINT_REPOSITORY_SLUG,
             "--pattern",
-            MANIFEST_NAME,
+            asset_name,
             "--dir",
             str(directory),
         ],
         check=True,
     )
-    return directory / MANIFEST_NAME
+    return directory / asset_name
 
 
 def clone_at_tag(lint_root: Path, tag: str, directory: Path) -> Path:
