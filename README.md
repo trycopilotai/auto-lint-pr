@@ -425,4 +425,4 @@ verification have not been performed either.
 
 ## License
 
-MIT
+MIT license
