@@ -103,6 +103,21 @@ def commit_all(repository: Path, message: str = "fixture") -> str:
     return run_git(repository, "rev-parse", "HEAD")
 
 
+def commit_all_without_lfs_filters(repository: Path) -> str:
+    environment = AUTO_LINT_PR.consumer_git_environment(os.environ)
+    for arguments in (
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "fixture"],
+    ):
+        subprocess.run(
+            arguments,
+            cwd=repository,
+            check=True,
+            env=environment,
+        )
+    return run_git(repository, "rev-parse", "HEAD")
+
+
 def blob_record(payload: bytes, mode: str = "100644") -> dict[str, str]:
     return {
         "mode": mode,
@@ -125,23 +140,76 @@ import os
 import sys
 from pathlib import Path
 
-for name in (
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
-    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-    "ACTIONS_RUNTIME_TOKEN",
-):
-    if os.environ.get(name):
-        raise SystemExit(91)
+class SelectionError(Exception):
+    pass
 
-if os.environ.get("FAKE_LINT_FAIL") == "true":
-    raise SystemExit(7)
 
-arguments = sys.argv[1:]
-cwd = Path(arguments[arguments.index("--cwd") + 1])
-path = cwd / "sample.txt"
-if path.read_text(encoding="utf-8") == "needs-formatting\\n":
-    path.write_text("formatted\\n", encoding="utf-8", newline="\\n")
+def record_environment(stage):
+    observation_path = os.environ.get("LINT_FIXTURE_OBSERVED")
+    if observation_path is None:
+        return
+    names = (
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+    )
+    token_present = False
+    for name in names:
+        if os.environ.get(name):
+            token_present = True
+    state = "present"
+    if not token_present:
+        state = "absent"
+    with Path(observation_path).open("a", encoding="utf-8") as handle:
+        handle.write(f"{stage}:{state}\\n")
+
+
+if __name__ != "__main__":
+    record_environment("import")
+
+
+def select_paths(cwd, explicit_paths, files_from0, modified):
+    record_environment("selection")
+    if files_from0 is not None:
+        payload = Path(files_from0).read_bytes()
+        return [cwd / path.decode("utf-8") for path in payload.split(b"\\0") if path]
+    if explicit_paths:
+        return [cwd / path for path in explicit_paths]
+    return sorted(cwd.glob("*.txt"))
+
+
+def main():
+    for name in (
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+    ):
+        if os.environ.get(name):
+            raise SystemExit(91)
+
+    if os.environ.get("FAKE_LINT_FAIL") == "true":
+        raise SystemExit(7)
+
+    arguments = sys.argv[1:]
+    cwd = Path(arguments[arguments.index("--cwd") + 1])
+    files_from0 = None
+    if "--files-from0" in arguments:
+        files_from0 = arguments[arguments.index("--files-from0") + 1]
+    paths = select_paths(cwd, [], files_from0, False)
+    (cwd.parent / "formatter-observed").write_text(
+        "\\n".join(path.relative_to(cwd).as_posix() for path in paths),
+        encoding="utf-8",
+        newline="\\n",
+    )
+    for path in paths:
+        if path.read_text(encoding="utf-8") == "needs-formatting\\n":
+            path.write_text("formatted\\n", encoding="utf-8", newline="\\n")
+
+
+if __name__ == "__main__":
+    main()
 """,
         encoding="utf-8",
         newline="\n",
@@ -1316,6 +1384,273 @@ class BranchSafetyTest(unittest.TestCase):
 
 
 class TransactionTest(unittest.TestCase):
+    def test_verified_lint_import_and_selection_run_without_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lint_root = root / "lint"
+            write_lint_fixture(lint_root)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            sample = consumer / "sample.txt"
+            sample.write_text("content\n", encoding="utf-8", newline="\n")
+            commit_all(consumer)
+            observations = root / "lint-environment.txt"
+            caller_environment = {
+                "GITHUB_TOKEN": "fixture-only-dummy-token",
+                "LINT_FIXTURE_OBSERVED": str(observations),
+            }
+            arguments = AUTO_LINT_PR.parser().parse_args(
+                ["prepare", "--lint-root", str(lint_root), "sample.txt"]
+            )
+
+            with mock.patch.dict(os.environ, caller_environment):
+                environment = AUTO_LINT_PR.consumer_git_environment(os.environ)
+                paths = AUTO_LINT_PR.selected_lint_paths(
+                    lint_root,
+                    consumer,
+                    arguments,
+                    environment,
+                )
+
+            self.assertEqual([sample], paths)
+            self.assertEqual(
+                ["import:absent", "selection:absent"],
+                observations.read_text(encoding="utf-8").splitlines(),
+            )
+
+    def test_prepare_skips_all_lfs_paths_before_formatter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lint_root = root / "lint"
+            manifest = write_lint_fixture(lint_root)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            (consumer / ".gitattributes").write_text(
+                "sample.txt filter=lfs\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            sample = consumer / "sample.txt"
+            sample.write_text("needs-formatting\n", encoding="utf-8", newline="\n")
+            commit_all_without_lfs_filters(consumer)
+            state = root / "state.json"
+            observations = root / "lint-environment.txt"
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GITHUB_TOKEN": "fixture-only-dummy-token",
+                    "LINT_FIXTURE_OBSERVED": str(observations),
+                },
+            ):
+                result = AUTO_LINT_PR.run_prepare(
+                    prepare_arguments(consumer, lint_root, manifest, state)
+                )
+
+            self.assertFalse(result["changed"])
+            self.assertEqual([], result["delta"])
+            self.assertEqual("needs-formatting\n", sample.read_text(encoding="utf-8"))
+            self.assertFalse((root / "formatter-observed").exists())
+            self.assertEqual(
+                ["import:absent", "selection:absent"],
+                observations.read_text(encoding="utf-8").splitlines(),
+            )
+            self.assertTrue(state.exists())
+
+    def test_prepare_skips_lfs_before_formatting_mixed_selection(self) -> None:
+        managed_payloads = (
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:" + b"a" * 64 + b"\nsize 1\n",
+            b"smudged asset payload\n",
+        )
+        for managed_payload in managed_payloads:
+            with self.subTest(payload=managed_payload[:8]):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    lint_root = root / "lint"
+                    manifest = write_lint_fixture(lint_root)
+                    consumer = root / "consumer"
+                    initialize_repository(consumer)
+                    (consumer / ".gitattributes").write_text(
+                        "managed.txt filter=lfs\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    managed = consumer / "managed.txt"
+                    managed.write_bytes(managed_payload)
+                    ordinary = consumer / "sample.txt"
+                    ordinary.write_text(
+                        "needs-formatting\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    commit_all_without_lfs_filters(consumer)
+                    state_path = root / "state.json"
+
+                    result = AUTO_LINT_PR.run_prepare(
+                        prepare_arguments(consumer, lint_root, manifest, state_path)
+                    )
+
+                    self.assertEqual(managed_payload, managed.read_bytes())
+                    self.assertEqual(
+                        "formatted\n",
+                        ordinary.read_text(encoding="utf-8"),
+                    )
+                    self.assertEqual(
+                        ["sample.txt"],
+                        [item["path"] for item in result["delta"]],
+                    )
+                    self.assertEqual(
+                        "sample.txt",
+                        (root / "formatter-observed").read_text(encoding="utf-8"),
+                    )
+
+    def test_verify_and_publish_reject_lfs_before_restore_or_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            (consumer / ".gitattributes").write_text(
+                "managed.py filter=lfs\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            managed = consumer / "managed.py"
+            managed.write_text("before = True\n", encoding="utf-8", newline="\n")
+            base_head = commit_all(consumer)
+            prepared = b"after = True\n"
+            record = {
+                "content": base64.b64encode(prepared).decode("ascii"),
+                "kind": "file",
+                "mode": "100644",
+                "path": "managed.py",
+                "sha256": hashlib.sha256(prepared).hexdigest(),
+            }
+            state_path = root / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "base": "main",
+                        "base_head": base_head,
+                        "branch": "auto-lint/main",
+                        "changed": True,
+                        "cwd": str(consumer),
+                        "delta": [record],
+                        "lint_commit": TEST_LINT_COMMIT,
+                        "lint_release": lint_release_record(),
+                        "repository": "owner/repository",
+                        "schema": 2,
+                    }
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            verify = AUTO_LINT_PR.parser().parse_args(
+                [
+                    "verify",
+                    "--cwd",
+                    str(consumer),
+                    "--state",
+                    str(state_path),
+                    "--restore",
+                ]
+            )
+            with mock.patch.object(AUTO_LINT_PR, "restore_prepared_delta") as restore:
+                with self.assertRaisesRegex(
+                    AUTO_LINT_PR.SafetyError,
+                    "Git LFS-managed paths",
+                ):
+                    AUTO_LINT_PR.run_verify(verify)
+            restore.assert_not_called()
+            self.assertEqual("before = True\n", managed.read_text(encoding="utf-8"))
+
+            publish = AUTO_LINT_PR.parser().parse_args(
+                ["publish", "--cwd", str(consumer), "--state", str(state_path)]
+            )
+            with mock.patch.object(AUTO_LINT_PR, "require_token") as require_token:
+                with self.assertRaisesRegex(
+                    AUTO_LINT_PR.SafetyError,
+                    "Git LFS-managed paths",
+                ):
+                    AUTO_LINT_PR.run_publish(publish)
+            require_token.assert_not_called()
+
+    def test_lfs_attributes_are_read_from_the_exact_base_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            (consumer / ".gitattributes").write_text(
+                "managed.py filter=lfs\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            managed = consumer / "managed.py"
+            managed.write_text("before = True\n", encoding="utf-8", newline="\n")
+            base_head = commit_all(consumer)
+            (consumer / ".gitattributes").write_text("", encoding="utf-8", newline="\n")
+            record = {
+                "path": "managed.py",
+                "kind": "deleted",
+                "mode": "100644",
+                "content": "",
+                "sha256": "",
+            }
+
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "Git LFS-managed paths",
+            ):
+                AUTO_LINT_PR.reject_lfs_prepared_paths(consumer, base_head, [record])
+
+    def test_lfs_attribute_protocol_errors_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            consumer = root / "consumer"
+            initialize_repository(consumer)
+            managed = consumer / "managed.py"
+            managed.write_text("before = True\n", encoding="utf-8", newline="\n")
+            base_head = commit_all(consumer)
+            record = {
+                "path": "managed.py",
+                "kind": "deleted",
+                "mode": "100644",
+                "content": "",
+                "sha256": "",
+            }
+            malformed = SimpleNamespace(stdout="other.py\0filter\0unspecified\0")
+
+            with mock.patch.object(AUTO_LINT_PR, "git", return_value=malformed):
+                with self.assertRaisesRegex(
+                    AUTO_LINT_PR.SafetyError,
+                    "mismatched transaction filter attributes",
+                ):
+                    AUTO_LINT_PR.reject_lfs_prepared_paths(
+                        consumer,
+                        base_head,
+                        [record],
+                    )
+
+    def test_lfs_attribute_git_errors_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            managed = root / "managed.py"
+            managed.write_text("before = True\n", encoding="utf-8", newline="\n")
+            record = {
+                "path": "managed.py",
+                "kind": "deleted",
+                "mode": "100644",
+                "content": "",
+                "sha256": "",
+            }
+
+            with self.assertRaises(AUTO_LINT_PR.CommandError):
+                AUTO_LINT_PR.reject_lfs_prepared_paths(
+                    root,
+                    "a" * 40,
+                    [record],
+                )
+
     def test_prepare_formats_with_credentials_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
