@@ -5,7 +5,7 @@
   },
   "generator": {
     "path": "scripts/generate_demo.py",
-    "sha256": "5fafbb2aae4de479a37fe83f8a57a8a72a04ec20c9f04500e958632614b0ebf7"
+    "sha256": "d9fa5ee4069a679e9f73e94600aef9c4245bff0747b7b2ce3a6baed0e56ead69"
   },
   "implementation": {
     "path": "auto_lint_pr.py",
@@ -24,14 +24,15 @@
     "sha256": "6c64d1859fdcdfa101ea28abb0a73f0ca087884c83534799b314f5fb7d54082b"
   },
   "run": {
-    "agent": "Claude",
-    "agent_version": "Claude Fable 5",
-    "date": "2026-09-01",
+    "agent": "Codex",
+    "agent_version": "GPT-6.1",
+    "date": "2026-11-07",
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "e7b36965e518322e4278a0bef3a69c4ded5e8d2f",
-    "input_commit": "c58f62d9d3e59a9c498a6bda667e527d0d353d8e",
-    "invocation": "python3.14 scripts/generate_demo.py --write --input-commit c58f62d9d3e59a9c498a6bda667e527d0d353d8e --agent Claude --agent-version 'Claude Fable 5' --evidence-date 2026-09-01",
+    "input_commit": "6414adacd2f9aa4697a5f87774314eead5eba587",
+    "input_tree": "ea6befc0fd587e321312b8a9a766a9e0ca3cac85",
+    "invocation": "python3 scripts/generate_demo.py --write --input-commit 6414adacd2f9aa4697a5f87774314eead5eba587 --agent Codex --agent-version GPT-6.1 --evidence-date 2026-11-07",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
     "protocol_sha256": "45aca39fde292b644c7c351082782708716d1403aa10b8edd6b645d6b5d21c42"
   },
