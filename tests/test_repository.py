@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -546,6 +547,7 @@ class LaunchSurfaceTest(unittest.TestCase):
         datetime.date.fromisoformat(run["date"])
         self.assertFalse(run["edited"])
         self.assertRegex(run["input_commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(run["input_tree"], r"^[0-9a-f]{40}$")
         self.assertRegex(run["fixture_consumer_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(run["fixture_lint_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(run["output_sha256"], r"^[0-9a-f]{64}$")
@@ -567,26 +569,6 @@ class LaunchSurfaceTest(unittest.TestCase):
             run["date"],
             invocation[invocation.index("--evidence-date") + 1],
         )
-        self.assertEqual(
-            0,
-            subprocess.run(
-                [
-                    "git",
-                    "merge-base",
-                    "--is-ancestor",
-                    run["input_commit"],
-                    "HEAD",
-                ],
-                cwd=ROOT,
-                check=False,
-            ).returncode,
-        )
-        # The invariant is that the evidence sits directly on top
-        # of the change it describes. Asking `HEAD^` only says that
-        # when HEAD is the manifest commit, which is true for a
-        # push to a branch and false on a pull request, where HEAD
-        # is a merge whose first parent is the base. Ask the
-        # manifest which commit carried it instead.
         manifest_commit = run_git(
             ROOT,
             "log",
@@ -595,9 +577,10 @@ class LaunchSurfaceTest(unittest.TestCase):
             "--",
             "evidence/demo-manifest.json",
         )
+        evidence_parent = run_git(ROOT, "rev-parse", f"{manifest_commit}^")
         self.assertEqual(
-            run_git(ROOT, "rev-parse", f"{manifest_commit}^"),
-            run["input_commit"],
+            run_git(ROOT, "rev-parse", f"{evidence_parent}^{{tree}}"),
+            run["input_tree"],
         )
         self.assertEqual(
             manifest["output"]["sha256"],
@@ -664,7 +647,14 @@ class LaunchSurfaceTest(unittest.TestCase):
                 candidate,
                 ignore=shutil.ignore_patterns(".git", "__pycache__"),
             )
-            run_git(candidate, "init", "-q", "-b", "main", "--object-format=sha1")
+            run_git(
+                candidate,
+                "init",
+                "-q",
+                "-b",
+                "main",
+                "--object-format=sha1",
+            )
             run_git(candidate, "config", "user.name", "Evidence Test")
             run_git(
                 candidate,
@@ -740,6 +730,237 @@ class LaunchSurfaceTest(unittest.TestCase):
                 demo_sha256,
                 manifest["demo"]["sha256"],
             )
+            self.assertEqual(
+                run_git(candidate, "rev-parse", f"{input_commit}^{{tree}}"),
+                manifest["run"]["input_tree"],
+            )
+
+    def test_demo_provenance_accepts_rewritten_same_tree_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate"
+            shutil.copytree(
+                ROOT,
+                candidate,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            run_git(candidate, "init", "-q", "-b", "main", "--object-format=sha1")
+            run_git(candidate, "config", "user.name", "Evidence Test")
+            run_git(
+                candidate,
+                "config",
+                "user.email",
+                "evidence@example.invalid",
+            )
+            run_git(candidate, "config", "commit.gpgSign", "false")
+            run_git(candidate, "add", "-A")
+            run_git(candidate, "commit", "-qm", "candidate source")
+            input_commit = run_git(candidate, "rev-parse", "HEAD")
+            input_tree = run_git(candidate, "rev-parse", "HEAD^{tree}")
+            write = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/generate_demo.py",
+                    "--write",
+                    "--input-commit",
+                    input_commit,
+                    "--agent",
+                    "Evidence Test",
+                    "--agent-version",
+                    "1",
+                    "--evidence-date",
+                    "2026-08-17",
+                ],
+                cwd=candidate,
+                check=False,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(0, write.returncode, write.stderr)
+            run_git(candidate, "add", "-A")
+            run_git(candidate, "commit", "-qm", "demo evidence")
+            with mock.patch.object(verify_repo, "ROOT", candidate):
+                verify_repo.verify_demo()
+
+            evidence_tree = run_git(candidate, "rev-parse", "HEAD^{tree}")
+            rewritten_parent = run_git(
+                candidate,
+                "commit-tree",
+                input_tree,
+                "-m",
+                "rebased source with identical tree",
+            )
+            rewritten_evidence = run_git(
+                candidate,
+                "commit-tree",
+                evidence_tree,
+                "-p",
+                rewritten_parent,
+                "-m",
+                "rebased evidence",
+            )
+            self.assertNotEqual(input_commit, rewritten_parent)
+            self.assertNotEqual(
+                0,
+                subprocess.run(
+                    [
+                        "git",
+                        "merge-base",
+                        "--is-ancestor",
+                        input_commit,
+                        rewritten_evidence,
+                    ],
+                    cwd=candidate,
+                    check=False,
+                ).returncode,
+            )
+            run_git(
+                candidate,
+                "update-ref",
+                "refs/heads/main",
+                rewritten_evidence,
+            )
+            rebased = root / "rebased"
+            subprocess.run(
+                ["git", "clone", "--no-local", str(candidate), str(rebased)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            missing_audit_commit = subprocess.run(
+                ["git", "cat-file", "-e", f"{input_commit}^{{commit}}"],
+                cwd=rebased,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(0, missing_audit_commit.returncode)
+            self.assertEqual(
+                "",
+                missing_audit_commit.stdout,
+            )
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    str(rebased / "scripts" / "generate_demo.py"),
+                    "--check",
+                ],
+                cwd=rebased,
+                check=False,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(0, checked.returncode, checked.stderr)
+            with mock.patch.object(verify_repo, "ROOT", rebased):
+                verify_repo.verify_demo()
+
+            run_git(rebased, "config", "user.name", "Evidence Test")
+            run_git(
+                rebased,
+                "config",
+                "user.email",
+                "evidence@example.invalid",
+            )
+            manifest_path = rebased / "evidence" / "demo-manifest.json"
+            good_manifest = manifest_path.read_bytes()
+            unreachable_commit = run_git(
+                rebased,
+                "commit-tree",
+                input_tree,
+                "-m",
+                "unreachable candidate",
+            )
+            dirty_unreachable_manifest = json.loads(good_manifest)
+            dirty_unreachable_manifest["run"]["agent"] = "Changed"
+            dirty_unreachable_manifest["run"]["input_commit"] = unreachable_commit
+            manifest_path.write_text(
+                json.dumps(dirty_unreachable_manifest, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    str(rebased / "scripts" / "generate_demo.py"),
+                    "--check",
+                ],
+                cwd=rebased,
+                check=False,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(0, checked.returncode)
+            self.assertIn(
+                "demo input commit is not reachable from HEAD",
+                checked.stderr,
+            )
+            manifest_path.write_bytes(good_manifest)
+
+            altered_manifest = json.loads(good_manifest)
+            altered_manifest["run"]["input_tree"] = "0" * 40
+            manifest_path.write_text(
+                json.dumps(altered_manifest, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            run_git(rebased, "add", "evidence/demo-manifest.json")
+            wrong_parent_tree = run_git(rebased, "write-tree")
+            wrong_parent = run_git(
+                rebased,
+                "commit-tree",
+                wrong_parent_tree,
+                "-m",
+                "different source tree",
+            )
+            manifest_path.write_bytes(good_manifest)
+            wrong_evidence = run_git(
+                rebased,
+                "commit-tree",
+                evidence_tree,
+                "-p",
+                wrong_parent,
+                "-m",
+                "evidence with wrong parent tree",
+            )
+            run_git(
+                rebased,
+                "update-ref",
+                "refs/heads/main",
+                wrong_evidence,
+            )
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    str(rebased / "scripts" / "generate_demo.py"),
+                    "--check",
+                ],
+                cwd=rebased,
+                check=False,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(0, checked.returncode)
+            self.assertIn(
+                "demo input tree is not the evidence predecessor tree",
+                checked.stderr,
+            )
+            with mock.patch.object(verify_repo, "ROOT", rebased):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "demo input tree is not the evidence predecessor tree",
+                ):
+                    verify_repo.verify_demo()
+
+    def test_demo_input_tree_requires_full_sha1(self) -> None:
+        for value in (None, "", "a" * 39, "g" * 40):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "demo input tree is invalid",
+                ):
+                    verify_repo.require_demo_input_tree(value)
 
     def test_comparison_metric_and_article_are_present(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

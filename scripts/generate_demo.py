@@ -31,6 +31,7 @@ TOKEN_NAMES = (
     "ACTIONS_RUNTIME_TOKEN",
 )
 GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+GIT_TREE_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ISO_DATE_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 EVIDENCE_DATE_OPTION = "--evidence-date"
 
@@ -379,6 +380,7 @@ def demo_manifest(
             "fixture_consumer_commit": run["fixture_consumer_commit"],
             "fixture_lint_commit": run["fixture_lint_commit"],
             "input_commit": metadata["input_commit"],
+            "input_tree": metadata["input_tree"],
             "invocation": metadata["invocation"],
             "output_sha256": output["sha256"],
             "protocol_sha256": sha256(ROOT / "skills" / "auto-lint-pr" / "SKILL.md"),
@@ -420,6 +422,62 @@ def require_candidate_commit(value: str) -> str:
     if completed.returncode != 0:
         raise ValueError("demo input commit is not reachable from HEAD")
     return value
+
+
+def candidate_tree(value: str) -> str:
+    """Return the tree for a validated candidate commit."""
+
+    tree = git(ROOT, "rev-parse", f"{value}^{{tree}}")
+    if GIT_TREE_PATTERN.fullmatch(tree) is None:
+        raise ValueError("demo input tree is invalid")
+    return tree
+
+
+def require_input_tree(value: object) -> str:
+    """Require the manifest's full SHA-1 input tree identity."""
+
+    if not isinstance(value, str) or GIT_TREE_PATTERN.fullmatch(value) is None:
+        raise ValueError("demo input tree is invalid")
+    return value
+
+
+def evidence_parent_tree() -> str:
+    """Return the tree immediately before the committed evidence manifest."""
+
+    evidence_commit = git(
+        ROOT,
+        "log",
+        "-1",
+        "--format=%H",
+        "--",
+        "evidence/demo-manifest.json",
+    )
+    evidence_parent = git(ROOT, "rev-parse", f"{evidence_commit}^")
+    tree = git(ROOT, "rev-parse", f"{evidence_parent}^{{tree}}")
+    return require_input_tree(tree)
+
+
+def expected_input_tree_for_check(input_commit: str) -> str:
+    """Bind clean evidence to its commit parent, or dirty output to its input."""
+
+    changed = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            "HEAD",
+            "--",
+            "evidence/demo-manifest.json",
+        ],
+        cwd=ROOT,
+        check=False,
+        env=isolated_git_environment(),
+    )
+    if changed.returncode == 0:
+        return evidence_parent_tree()
+    if changed.returncode == 1:
+        return candidate_tree(require_candidate_commit(input_commit))
+    raise ValueError("could not inspect the demo manifest commit state")
 
 
 def require_evidence_date(value: object) -> str:
@@ -474,12 +532,20 @@ def manifest_metadata(arguments: argparse.Namespace) -> dict[str, str]:
             "agent_version",
             "date",
             "input_commit",
+            "input_tree",
             "invocation",
         ):
             value = run.get(name)
             if not isinstance(value, str) or value == "":
                 raise ValueError(f"demo manifest has an invalid {name}")
             metadata[name] = value
+        metadata["input_tree"] = require_input_tree(run.get("input_tree"))
+        if GIT_COMMIT_PATTERN.fullmatch(metadata["input_commit"]) is None:
+            raise ValueError("demo input commit must be a full SHA-1 commit")
+        if metadata["input_tree"] != expected_input_tree_for_check(
+            metadata["input_commit"]
+        ):
+            raise ValueError("demo input tree is not the evidence predecessor tree")
     else:
         values = {
             "agent": arguments.agent,
@@ -497,7 +563,11 @@ def manifest_metadata(arguments: argparse.Namespace) -> dict[str, str]:
                 raise ValueError(f"--write requires {option}")
             metadata[name] = value
         metadata["invocation"] = recorded_invocation()
-    metadata["input_commit"] = require_candidate_commit(metadata["input_commit"])
+        metadata["input_commit"] = require_candidate_commit(metadata["input_commit"])
+        metadata["input_tree"] = candidate_tree(metadata["input_commit"])
+    if GIT_COMMIT_PATTERN.fullmatch(metadata["input_commit"]) is None:
+        raise ValueError("demo input commit must be a full SHA-1 commit")
+    metadata["input_tree"] = require_input_tree(metadata["input_tree"])
     metadata["date"] = require_evidence_date(metadata["date"])
     require_invocation_date(metadata["invocation"], metadata["date"])
     return metadata
