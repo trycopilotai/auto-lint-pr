@@ -96,6 +96,14 @@ def verify_skill_entry(skill: Path, platform_name: str) -> None:
     raise ValueError("skill must be a symbolic link")
 
 
+def require_demo_input_tree(value: object) -> str:
+    """Require a full SHA-1 tree identity in demo provenance."""
+
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise ValueError("demo input tree is invalid")
+    return value
+
+
 def repository_files() -> list[Path]:
     completed = subprocess.run(
         [
@@ -668,6 +676,7 @@ def verify_demo() -> None:
         "fixture_consumer_commit",
         "fixture_lint_commit",
         "input_commit",
+        "input_tree",
         "invocation",
         "output_sha256",
         "protocol_sha256",
@@ -716,6 +725,7 @@ def verify_demo() -> None:
             raise ValueError(f"demo run commit is invalid: {key}")
         if re.fullmatch(r"[0-9a-f]{40}", run[key]) is None:
             raise ValueError(f"demo run commit is invalid: {key}")
+    input_tree = require_demo_input_tree(run["input_tree"])
     invocation = shlex.split(run["invocation"])
     for option, key in (
         ("--agent", "agent"),
@@ -742,15 +752,22 @@ def verify_demo() -> None:
         stdout=subprocess.PIPE,
         text=True,
     ).stdout.strip()
-    expected_input_commit = subprocess.run(
+    evidence_parent = subprocess.run(
         ["git", "rev-parse", f"{evidence_commit}^"],
         cwd=ROOT,
         check=True,
         stdout=subprocess.PIPE,
         text=True,
     ).stdout.strip()
-    if run["input_commit"] != expected_input_commit:
-        raise ValueError("demo input commit is not the evidence predecessor")
+    expected_input_tree = subprocess.run(
+        ["git", "rev-parse", f"{evidence_parent}^{{tree}}"],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    if input_tree != expected_input_tree:
+        raise ValueError("demo input tree is not the evidence predecessor tree")
     if run["output_sha256"] != value["output"]["sha256"]:
         raise ValueError("demo output checksum provenance is inconsistent")
     if run["protocol_sha256"] != value["skill"]["sha256"]:
