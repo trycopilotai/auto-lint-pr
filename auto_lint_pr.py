@@ -8,6 +8,7 @@ import base64
 import binascii
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -430,6 +431,7 @@ def lint_command(
     arguments: argparse.Namespace,
     image_manifest: Path | None = None,
     runtime_root: Path | None = None,
+    selected_files_from0: str | None = None,
 ) -> list[str]:
     validate_selection(arguments)
     if arguments.lint_root is None:
@@ -466,7 +468,9 @@ def lint_command(
         if int(arguments.print_width) < 1:
             raise SafetyError("print width must be a positive integer")
         command.extend(["--print-width", arguments.print_width])
-    if arguments.modified:
+    if selected_files_from0 is not None:
+        command.extend(["--files-from0", selected_files_from0])
+    elif arguments.modified:
         command.append("--modified")
     elif arguments.files_from0 is not None:
         command.extend(["--files-from0", arguments.files_from0])
@@ -1373,6 +1377,116 @@ def validate_prepared_modes(records: list[dict[str, str]]) -> None:
             raise SafetyError(f"prepared path has an unsupported mode: {path}")
 
 
+def lfs_paths_at_base(
+    repository: Path,
+    base_head: str,
+    paths: Sequence[str],
+) -> set[str]:
+    """Return paths marked LFS by attributes from one immutable base tree."""
+
+    if not paths:
+        return set()
+    if GIT_OBJECT_PATTERN.fullmatch(base_head) is None:
+        raise SafetyError("transaction base head is not a canonical Git object")
+    canonical_paths = [prepared_relative_path(path).as_posix() for path in paths]
+    input_text = "".join(path + "\0" for path in canonical_paths)
+    isolated = consumer_git_environment(os.environ)
+    output = git(
+        repository,
+        "check-attr",
+        "-z",
+        "--source",
+        base_head,
+        "--stdin",
+        "filter",
+        environment=isolated,
+        input_text=input_text,
+    ).stdout
+    fields = output.split("\0")
+    if fields[-1:] == [""]:
+        fields.pop()
+    if len(fields) != len(canonical_paths) * 3:
+        raise SafetyError("Git returned malformed transaction filter attributes")
+    managed: set[str] = set()
+    for index, path in enumerate(canonical_paths):
+        offset = index * 3
+        if fields[offset] != path or fields[offset + 1] != "filter":
+            raise SafetyError("Git returned mismatched transaction filter attributes")
+        if fields[offset + 2] == "lfs":
+            managed.add(path)
+    return managed
+
+
+def reject_lfs_prepared_paths(
+    repository: Path,
+    base_head: str,
+    records: list[dict[str, str]],
+) -> None:
+    """Reject transaction paths marked with Git LFS at the pinned base."""
+
+    paths = [record.get("path") for record in records]
+    managed = lfs_paths_at_base(repository, base_head, paths)
+    if managed:
+        raise SafetyError("transaction delta contains Git LFS-managed paths")
+
+
+def selected_lint_paths(
+    lint_root: Path,
+    repository: Path,
+    arguments: argparse.Namespace,
+    environment: Mapping[str, str],
+) -> list[Path]:
+    """Resolve selection with the exact lint code that will format it."""
+
+    selector_path = lint_root / "lint.py"
+    if selector_path.is_symlink() or not selector_path.is_file():
+        raise DependencyError("verified lint selection module is unavailable")
+    module_name = "verified_lint_selection"
+    original_environment = dict(os.environ)
+    original_cwd = Path.cwd()
+    try:
+        os.environ.clear()
+        os.environ.update(environment)
+        os.chdir(repository)
+        specification = importlib.util.spec_from_file_location(
+            module_name,
+            selector_path,
+        )
+        if specification is None or specification.loader is None:
+            raise DependencyError("verified lint selection module cannot be loaded")
+        module = importlib.util.module_from_spec(specification)
+        sys.modules[module_name] = module
+        specification.loader.exec_module(module)
+        select_paths = getattr(module, "select_paths", None)
+        if not callable(select_paths):
+            raise DependencyError("verified lint release lacks its selection API")
+        selection_error = getattr(module, "SelectionError", None)
+        if not isinstance(selection_error, type):
+            raise DependencyError(
+                "verified lint release lacks its selection error type"
+            )
+        try:
+            return select_paths(
+                cwd=repository,
+                explicit_paths=arguments.paths,
+                files_from0=arguments.files_from0,
+                modified=arguments.modified,
+            )
+        except selection_error as error:
+            raise SafetyError(
+                "verified lint release rejected the file selection"
+            ) from error
+        except TypeError as error:
+            raise DependencyError(
+                "verified lint release has an incompatible selection API"
+            ) from error
+    finally:
+        sys.modules.pop(module_name, None)
+        os.chdir(original_cwd)
+        os.environ.clear()
+        os.environ.update(original_environment)
+
+
 def publication_file_changes(
     records: list[dict[str, str]],
 ) -> dict[str, list[dict[str, str]]]:
@@ -2027,15 +2141,39 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         )
         runtime_manifest_path = runtime_directory / "lint-release-manifest.json"
         write_canonical(runtime_manifest_path, runtime_manifest)
-        run_checked(
-            lint_command(
-                arguments,
-                image_manifest=runtime_manifest_path,
-                runtime_root=runtime_root,
-            ),
-            cwd=repository,
-            environment=isolated,
+        validate_selection(arguments)
+        selected_paths = selected_lint_paths(
+            runtime_root,
+            repository,
+            arguments,
+            isolated,
         )
+        selected_relative_paths = [
+            path.relative_to(repository).as_posix() for path in selected_paths
+        ]
+        managed_paths = lfs_paths_at_base(
+            repository,
+            base_head,
+            selected_relative_paths,
+        )
+        format_paths = [
+            path for path in selected_relative_paths if path not in managed_paths
+        ]
+        if format_paths:
+            selection_path = runtime_directory / "format-files.bin"
+            selection_path.write_bytes(
+                b"".join(os.fsencode(path) + b"\0" for path in format_paths)
+            )
+            run_checked(
+                lint_command(
+                    arguments,
+                    image_manifest=runtime_manifest_path,
+                    runtime_root=runtime_root,
+                    selected_files_from0=str(selection_path),
+                ),
+                cwd=repository,
+                environment=isolated,
+            )
     if sha256(manifest_path) != release_binding["manifest_sha256"]:
         raise DependencyError("lint release manifest changed during formatting")
     if arguments.hook is not None:
@@ -2055,6 +2193,7 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         raise SafetyError("base checkout changed during token-free preparation")
     records = delta_records(repository)
     validate_prepared_modes(records)
+    reject_lfs_prepared_paths(repository, base_head, records)
     state = {
         "base": arguments.base,
         "base_head": base_head,
@@ -2210,6 +2349,7 @@ def verify_transaction_checkout(
     ).stdout.strip()
     if current_head != state["base_head"]:
         raise SafetyError("base checkout changed after preparation")
+    reject_lfs_prepared_paths(repository, state["base_head"], state["delta"])
     if restore:
         ensure_clean(repository)
         restore_prepared_delta(repository, state["delta"])

@@ -141,22 +141,45 @@ import os
 import sys
 from pathlib import Path
 
-for name in (
-    "GITHUB_TOKEN",
-    "GH_TOKEN",
-    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-    "ACTIONS_RUNTIME_TOKEN",
-):
-    if os.environ.get(name):
-        raise SystemExit(90)
+class SelectionError(Exception):
+    pass
 
-arguments = sys.argv[1:]
-cwd = Path(arguments[arguments.index("--cwd") + 1])
-(cwd / "sample.txt").write_text(
-    "formatted\\n",
-    encoding="utf-8",
-    newline="\\n",
-)
+
+def select_paths(cwd, explicit_paths, files_from0, modified):
+    paths = list(explicit_paths)
+    if files_from0 is not None:
+        payload = Path(files_from0).read_bytes()
+        paths.extend(
+            value.decode("utf-8")
+            for value in payload.split(b"\\0")
+            if value
+        )
+    if paths:
+        return [cwd / path for path in paths]
+    return [cwd / "sample.txt"]
+
+
+def main():
+    for name in (
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+    ):
+        if os.environ.get(name):
+            raise SystemExit(90)
+
+    arguments = sys.argv[1:]
+    cwd = Path(arguments[arguments.index("--cwd") + 1])
+    (cwd / "sample.txt").write_text(
+        "formatted\\n",
+        encoding="utf-8",
+        newline="\\n",
+    )
+
+
+if __name__ == "__main__":
+    main()
 """,
             encoding="utf-8",
             newline="\n",
