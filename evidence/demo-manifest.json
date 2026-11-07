@@ -9,7 +9,7 @@
   },
   "implementation": {
     "path": "auto_lint_pr.py",
-    "sha256": "2c83563664a777f34805b3340f4050b98decf03384031b5909dc0696fc128e13"
+    "sha256": "67a2c65efd8f05a7656244f33117279c6c478ff423dd2f67e4c1da3b144f797c"
   },
   "invocation": {
     "path": "scripts/demo.sh",
@@ -30,9 +30,9 @@
     "edited": false,
     "fixture_consumer_commit": "7cce122fb228f5fb48a6422d5f6c9c971df78aed",
     "fixture_lint_commit": "b58eea72a31b083fcf1b5160900795b355997210",
-    "input_commit": "eb9ed5f5499c70c38ac353219ac2a49215ca37fc",
-    "input_tree": "add03d00370162eb575cf9ad8e59c1f2e2d4a2a0",
-    "invocation": "python3 scripts/generate_demo.py --write --input-commit eb9ed5f5499c70c38ac353219ac2a49215ca37fc --agent Codex --agent-version GPT-6 --evidence-date 2026-11-07",
+    "input_commit": "e019270c5e2d2c2f2c1e77fbf788eae3d4a00860",
+    "input_tree": "68b3131a07514e38ee3188f257b7fde96cd93523",
+    "invocation": "python3 scripts/generate_demo.py --write --input-commit e019270c5e2d2c2f2c1e77fbf788eae3d4a00860 --agent Codex --agent-version GPT-6 --evidence-date 2026-11-07",
     "output_sha256": "f34917568313e58d0ce345742d36bac11fc3133ff503289d862547fbebfd6d85",
     "protocol_sha256": "45aca39fde292b644c7c351082782708716d1403aa10b8edd6b645d6b5d21c42"
   },
