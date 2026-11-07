@@ -1505,6 +1505,55 @@ class TransactionTest(unittest.TestCase):
                         (root / "formatter-observed").read_text(encoding="utf-8"),
                     )
 
+    def test_prepare_preserves_nested_cwd_and_lfs_selection(self) -> None:
+        payloads = (
+            b"version https://git-lfs.github.com/spec/v1\n"
+            b"oid sha256:" + b"a" * 64 + b"\nsize 1\n",
+            b"hydrated asset payload\n",
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload[:8]):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    lint_root = root / "lint"
+                    manifest = write_lint_fixture(lint_root)
+                    consumer = root / "consumer"
+                    initialize_repository(consumer)
+                    nested = consumer / "fixtures"
+                    nested.mkdir()
+                    (consumer / ".git" / "info" / "exclude").write_text(
+                        "formatter-observed\n", encoding="utf-8"
+                    )
+                    (consumer / ".gitattributes").write_text(
+                        "fixtures/managed.txt filter=lfs\n",
+                        encoding="utf-8",
+                    )
+                    managed = nested / "managed.txt"
+                    managed.write_bytes(payload)
+                    ordinary = nested / "sample.txt"
+                    ordinary.write_text("needs-formatting\n", encoding="utf-8")
+                    outside = consumer / "outside.txt"
+                    outside.write_text("needs-formatting\n", encoding="utf-8")
+                    commit_all_without_lfs_filters(consumer)
+                    arguments = prepare_arguments(
+                        consumer, lint_root, manifest, root / "state.json"
+                    )
+                    arguments.cwd = str(nested)
+
+                    result = AUTO_LINT_PR.run_prepare(arguments)
+
+                    self.assertEqual(payload, managed.read_bytes())
+                    self.assertEqual("formatted\n", ordinary.read_text())
+                    self.assertEqual("needs-formatting\n", outside.read_text())
+                    self.assertEqual(
+                        ["fixtures/sample.txt"],
+                        [item["path"] for item in result["delta"]],
+                    )
+                    self.assertEqual(
+                        "sample.txt",
+                        (consumer / "formatter-observed").read_text(),
+                    )
+
     def test_verify_and_publish_reject_lfs_before_restore_or_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
