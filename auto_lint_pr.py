@@ -2144,7 +2144,7 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
         validate_selection(arguments)
         selected_paths = selected_lint_paths(
             runtime_root,
-            repository,
+            cwd,
             arguments,
             isolated,
         )
@@ -2157,7 +2157,9 @@ def run_prepare(arguments: argparse.Namespace) -> dict[str, Any]:
             selected_relative_paths,
         )
         format_paths = [
-            path for path in selected_relative_paths if path not in managed_paths
+            os.path.relpath(path, cwd)
+            for path in selected_paths
+            if path.relative_to(repository).as_posix() not in managed_paths
         ]
         if format_paths:
             selection_path = runtime_directory / "format-files.bin"
