@@ -869,6 +869,80 @@ class BranchSafetyTest(unittest.TestCase):
             AUTO_LINT_PR.branch_name("Feature/One"),
         )
 
+    def test_only_exact_formatter_proof_base_uses_nested_branch(self) -> None:
+        self.assertEqual(
+            "trycopilotai-ci/proof/formatter/main",
+            AUTO_LINT_PR.branch_name("trycopilotai-ci/proof/main"),
+        )
+        cases = {
+            "trycopilotai-ci/proof/main-extra": (
+                "auto-lint/trycopilotai-ci-proof-main-extra"
+            ),
+            "trycopilotai-ci/proof/feature": (
+                "auto-lint/trycopilotai-ci-proof-feature"
+            ),
+            "trycopilotai-ci/proof/main/": ("auto-lint/trycopilotai-ci-proof-main"),
+            "main": "auto-lint/main",
+        }
+        for base, expected in cases.items():
+            with self.subTest(base=base):
+                self.assertEqual(expected, AUTO_LINT_PR.branch_name(base))
+
+    def test_formatter_proof_branch_is_bound_through_transaction_and_api(self) -> None:
+        base = "trycopilotai-ci/proof/main"
+        branch = "trycopilotai-ci/proof/formatter/main"
+        state = {
+            "base": base,
+            "base_head": "1" * 40,
+            "branch": branch,
+            "changed": False,
+            "cwd": ".",
+            "delta": [],
+            "lint_commit": TEST_LINT_COMMIT,
+            "lint_release": lint_release_record(),
+            "repository": "owner/repository",
+            "schema": 2,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            loaded = AUTO_LINT_PR.transaction_state(state_path)
+            self.assertEqual(branch, loaded["branch"])
+
+            state["branch"] = "auto-lint/trycopilotai-ci-proof-main"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.SafetyError,
+                "branch does not match its base",
+            ):
+                AUTO_LINT_PR.transaction_state(state_path)
+
+        environment = {"GH_TOKEN": "fixture-token"}
+        with mock.patch.object(AUTO_LINT_PR, "gh_api", return_value=[]) as api:
+            AUTO_LINT_PR.create_remote_branch(
+                "owner/repository",
+                branch,
+                "1" * 40,
+                environment,
+            )
+            create_ref = api.call_args.args[0]
+            self.assertIn(
+                "ref=refs/heads/trycopilotai-ci/proof/formatter/main",
+                create_ref,
+            )
+
+            api.reset_mock()
+            AUTO_LINT_PR.open_pull_requests(
+                "owner/repository",
+                branch,
+                environment,
+            )
+            list_prs = api.call_args.args[0]
+            self.assertIn(
+                "head=owner:trycopilotai-ci/proof/formatter/main",
+                list_prs,
+            )
+
     def test_failed_branch_creation_is_not_reconciled_as_owned(self) -> None:
         with (
             mock.patch.object(

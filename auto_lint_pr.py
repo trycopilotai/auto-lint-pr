@@ -407,6 +407,8 @@ def refuse_pull_request_target(
 
 
 def branch_name(base: str) -> str:
+    if base == "trycopilotai-ci/proof/main":
+        return "trycopilotai-ci/proof/formatter/main"
     slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
     if slug == "":
         raise SafetyError("base branch does not produce a safe slug")
