@@ -368,6 +368,54 @@ class WorkflowMetadataTest(unittest.TestCase):
         )
         self.assertNotIn("lint-requirements:v", workflow)
 
+    def test_unsigned_v019_dependency_schema_has_no_policy_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_name = "lint-release-manifest.json"
+            manifest = root / manifest_name
+            manifest.write_text("{}\n", encoding="utf-8", newline="\n")
+            manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            dependency = {
+                "allowed_signers_sha256": manifest_sha,
+                "commit": "1" * 40,
+                "manifest": manifest_name,
+                "manifest_sha256": manifest_sha,
+                "ref": "refs/tags/v0.1.9",
+                "repository": "https://github.com/trycopilotai/lint",
+                "schema": 3,
+                "tag_object": "2" * 40,
+                "tree": "3" * 40,
+            }
+            (root / "lint-dependency.json").write_text(
+                json.dumps(dependency),
+                encoding="utf-8",
+                newline="\n",
+            )
+            with (
+                mock.patch.object(verify_repo, "ROOT", root),
+                mock.patch.object(verify_repo, "LINT_REF", "refs/tags/v0.1.9"),
+                mock.patch.object(verify_repo, "LINT_COMMIT", "1" * 40),
+                mock.patch.object(verify_repo, "LINT_TAG_OBJECT", "2" * 40),
+                mock.patch.object(verify_repo, "LINT_TREE", "3" * 40),
+                mock.patch.object(
+                    verify_repo,
+                    "LINT_ALLOWED_SIGNERS_SHA256",
+                    manifest_sha,
+                ),
+            ):
+                verify_repo.verify_lint_dependency()
+                dependency["signature_policy"] = "skip"
+                (root / "lint-dependency.json").write_text(
+                    json.dumps(dependency),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "does not match the release",
+                ):
+                    verify_repo.verify_lint_dependency()
+
     def test_transitional_lint_manifest_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = Path(temporary) / "lint-release-manifest.json"

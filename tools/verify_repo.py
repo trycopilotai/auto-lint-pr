@@ -278,11 +278,20 @@ def verify_lint_dependency() -> None:
         "manifest_sha256": sha256(ROOT / LINT_MANIFEST),
         "ref": LINT_REF,
         "repository": LINT_REPOSITORY,
-        "schema": 2,
-        "signer": "trycopilotai-release",
         "tag_object": LINT_TAG_OBJECT,
         "tree": LINT_TREE,
     }
+    if LINT_REF == "refs/tags/v0.1.9":
+        expected.update(
+            {"schema": 3}
+        )
+    else:
+        expected.update(
+            {
+                "schema": 2,
+                "signer": "trycopilotai-release",
+            }
+        )
     if value != expected:
         raise ValueError("lint dependency ledger does not match the release")
 

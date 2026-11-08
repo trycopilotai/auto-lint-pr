@@ -6,7 +6,7 @@ dependency ledger, the copied release manifest, the copied
 allowed-signers file, the constants block in
 ``tools/verify_repo.py``, and the workflow checkout refs. This
 tool recomputes all of them from a lint checkout and a release
-manifest asset, verifies the signed release tag with
+manifest asset, verifies the release tag with
 ``auto_lint_pr.verify_lint_release`` first, and refuses to
 write anything unless every surface can be rewritten.
 """
@@ -166,18 +166,28 @@ def build_dependency(
 ) -> dict[str, object]:
     """Build the dependency ledger for one resolved release."""
 
-    return {
+    dependency: dict[str, object] = {
         "allowed_signers_sha256": sha256_bytes(signers_bytes),
         "commit": release["commit"],
         "manifest": MANIFEST_NAME,
         "manifest_sha256": sha256_bytes(manifest_bytes),
         "ref": release["ref"],
         "repository": verify_repo.LINT_REPOSITORY,
-        "schema": 2,
-        "signer": "trycopilotai-release",
         "tag_object": release["tag_object"],
         "tree": release["tree"],
     }
+    if release["ref"] == "refs/tags/v0.1.9":
+        dependency.update(
+            {"schema": 3}
+        )
+    else:
+        dependency.update(
+            {
+                "schema": 2,
+                "signer": "trycopilotai-release",
+            }
+        )
+    return dependency
 
 
 def render_dependency(dependency: dict[str, object]) -> bytes:
@@ -236,7 +246,7 @@ def verify_release_pin(
     signers_bytes: bytes,
     stage: Path,
 ) -> None:
-    """Verify the signed release before any surface is written."""
+    """Verify the exact release before any surface is written."""
 
     dependency_path = stage / DEPENDENCY_NAME
     manifest_path = stage / MANIFEST_NAME
