@@ -10,6 +10,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tools import repin_lint  # noqa: E402
 
 BUMP_FILES = (
     ".claude-plugin/plugin.json",
@@ -231,6 +234,57 @@ class RepinLintTest(unittest.TestCase):
         self.copy_root.mkdir()
         copy_tree(REPIN_FILES, self.copy_root)
         self.original = read_all(self.copy_root, REPIN_FILES)
+
+    def test_v019_dependency_uses_only_the_exact_unsigned_schema(self) -> None:
+        release = {
+            "commit": "1" * 40,
+            "ref": "refs/tags/v0.1.9",
+            "tag_object": "2" * 40,
+            "tree": "3" * 40,
+        }
+
+        dependency = repin_lint.build_dependency(
+            release,
+            b"manifest bytes",
+            b"signer bytes",
+        )
+
+        self.assertEqual(
+            {
+                "allowed_signers_sha256",
+                "commit",
+                "manifest",
+                "manifest_sha256",
+                "ref",
+                "repository",
+                "schema",
+                "tag_object",
+                "tree",
+            },
+            set(dependency),
+        )
+        self.assertEqual(3, dependency["schema"])
+
+    def test_other_release_dependency_keeps_signed_schema(self) -> None:
+        release = {
+            "commit": "1" * 40,
+            "ref": "refs/tags/v0.1.8",
+            "tag_object": "2" * 40,
+            "tree": "3" * 40,
+        }
+
+        dependency = repin_lint.build_dependency(
+            release,
+            b"manifest bytes",
+            b"signer bytes",
+        )
+
+        self.assertEqual(2, dependency["schema"])
+        self.assertEqual("trycopilotai-release", dependency["signer"])
+        self.assertEqual(
+            repin_lint.sha256_bytes(b"signer bytes"),
+            dependency["allowed_signers_sha256"],
+        )
 
     def test_repin_to_the_current_tag_is_a_noop(self) -> None:
         tag = pinned_lint_tag()

@@ -307,6 +307,52 @@ if __name__ == "__main__":
     return manifest_path
 
 
+def rewrite_fixture_as_unsigned_v019(lint_root: Path, manifest_path: Path) -> None:
+    """Retag a valid lint fixture as the exact unsigned v0.1.9 release."""
+
+    run_git(lint_root, "tag", "-d", "v0.1.0")
+    run_git(lint_root, "config", "tag.gpgsign", "false")
+    run_git(lint_root, "tag", "-a", "v0.1.9", "-m", "lint fixture v0.1.9")
+    tag_ref = "refs/tags/v0.1.9"
+    commit = run_git(lint_root, "rev-parse", f"{tag_ref}^{{commit}}")
+    tag_object = run_git(lint_root, "rev-parse", f"{tag_ref}^{{tag}}")
+    tree = run_git(lint_root, "rev-parse", f"{tag_ref}^{{tree}}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["release"] = "0.1.9"
+    manifest["source"]["archive"] = "lint-0.1.9.tar.gz"
+    manifest["source"]["commit"] = commit
+    manifest["source"]["sha256"] = AUTO_LINT_PR.deterministic_archive_sha256(
+        lint_root,
+        tag_ref,
+        "0.1.9",
+        AUTO_LINT_PR.token_free_environment(os.environ),
+    )
+    manifest_path.write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+        newline="\n",
+    )
+    dependency = {
+        "allowed_signers_sha256": AUTO_LINT_PR.sha256(
+            manifest_path.parent / "lint-release-allowed-signers"
+        ),
+        "commit": commit,
+        "manifest": manifest_path.name,
+        "manifest_sha256": AUTO_LINT_PR.sha256(manifest_path),
+        "ref": tag_ref,
+        "repository": "https://github.com/trycopilotai/lint",
+        "schema": 3,
+        "tag_object": tag_object,
+        "tree": tree,
+    }
+    dependency_path = manifest_path.parent / "lint-dependency.json"
+    dependency_path.write_text(
+        json.dumps(dependency, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def prepare_arguments(
     consumer: Path,
     lint_root: Path,
@@ -351,6 +397,87 @@ def write_default_verification_receipt(
 
 
 class CommandTest(unittest.TestCase):
+    def test_unsigned_v019_lint_release_is_verified_without_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            rewrite_fixture_as_unsigned_v019(lint_root, manifest_path)
+            dependency_path = manifest_path.parent / "lint-dependency.json"
+            signers_path = manifest_path.parent / "lint-release-allowed-signers"
+            old_verifier = subprocess.run(
+                ["git", "-C", str(lint_root), "verify-tag", "v0.1.9"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertNotEqual(0, old_verifier.returncode)
+
+            actual = AUTO_LINT_PR.verify_lint_release(
+                lint_root,
+                manifest_path,
+                dependency_path,
+                signers_path,
+            )
+
+            self.assertEqual("0.1.9", actual["release"])
+            self.assertEqual(
+                run_git(lint_root, "rev-parse", "refs/tags/v0.1.9^{tag}"),
+                actual["verified_dependency"]["tag_object"],
+            )
+            self.assertEqual(
+                run_git(lint_root, "rev-parse", "HEAD^{tree}"),
+                actual["verified_dependency"]["tree"],
+            )
+            signers_path.write_text("changed\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.DependencyError,
+                "allowed-signers checksum does not match",
+            ):
+                AUTO_LINT_PR.verify_lint_release(
+                    lint_root,
+                    manifest_path,
+                    dependency_path,
+                    signers_path,
+                )
+
+    def test_unsigned_v019_dependency_rejects_other_ref_and_policy_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lint_root = Path(directory) / "lint"
+            manifest_path = write_lint_fixture(lint_root)
+            rewrite_fixture_as_unsigned_v019(lint_root, manifest_path)
+            dependency_path = manifest_path.parent / "lint-dependency.json"
+            signers_path = manifest_path.parent / "lint-release-allowed-signers"
+            original = json.loads(dependency_path.read_text(encoding="utf-8"))
+
+            wrong_ref = dict(original)
+            wrong_ref["ref"] = "refs/tags/v0.1.8"
+            dependency_path.write_text(json.dumps(wrong_ref), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.DependencyError,
+                "limited to v0.1.9",
+            ):
+                AUTO_LINT_PR.verify_lint_release(
+                    lint_root,
+                    manifest_path,
+                    dependency_path,
+                    signers_path,
+                )
+
+            extra_policy = dict(original)
+            extra_policy["signature_policy"] = "skip"
+            dependency_path.write_text(json.dumps(extra_policy), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AUTO_LINT_PR.DependencyError,
+                "fields differ.*signature_policy",
+            ):
+                AUTO_LINT_PR.verify_lint_release(
+                    lint_root,
+                    manifest_path,
+                    dependency_path,
+                    signers_path,
+                )
+
     def test_signed_lint_release_is_verified(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             lint_root = Path(directory) / "lint"

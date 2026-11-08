@@ -669,23 +669,37 @@ def validate_lint_dependency(
     manifest_path: Path,
     allowed_signers_path: Path,
 ) -> None:
-    require_exact_keys(
-        dependency,
-        {
-            "allowed_signers_sha256",
-            "commit",
-            "manifest",
-            "manifest_sha256",
-            "ref",
-            "repository",
-            "schema",
-            "signer",
-            "tag_object",
-            "tree",
-        },
-        "lint dependency ledger",
-    )
-    if dependency.get("schema") != 2:
+    schema = dependency.get("schema")
+    signed_fields = {
+        "allowed_signers_sha256",
+        "commit",
+        "manifest",
+        "manifest_sha256",
+        "ref",
+        "repository",
+        "schema",
+        "signer",
+        "tag_object",
+        "tree",
+    }
+    unsigned_v019_fields = {
+        "allowed_signers_sha256",
+        "commit",
+        "manifest",
+        "manifest_sha256",
+        "ref",
+        "repository",
+        "schema",
+        "tag_object",
+        "tree",
+    }
+    if schema == 2:
+        require_exact_keys(dependency, signed_fields, "lint dependency ledger")
+    elif schema == 3:
+        require_exact_keys(dependency, unsigned_v019_fields, "lint dependency ledger")
+        if dependency.get("ref") != "refs/tags/v0.1.9":
+            raise DependencyError("unsigned lint dependency is limited to v0.1.9")
+    else:
         raise DependencyError("unsupported lint dependency schema")
     if dependency.get("repository") != "https://github.com/trycopilotai/lint":
         raise DependencyError("lint dependency repository is invalid")
@@ -697,9 +711,10 @@ def validate_lint_dependency(
         raise DependencyError("lint dependency ref is invalid")
     for name in ("commit", "tag_object", "tree"):
         require_git_object(dependency.get(name), f"lint dependency {name}")
-    signer = dependency.get("signer")
-    if signer != "trycopilotai-release":
-        raise DependencyError("lint dependency signer is invalid")
+    if schema == 2:
+        signer = dependency.get("signer")
+        if signer != "trycopilotai-release":
+            raise DependencyError("lint dependency signer is invalid")
     manifest_name = dependency.get("manifest")
     if manifest_name != manifest_path.name:
         raise DependencyError("lint dependency manifest path does not match")
@@ -712,18 +727,18 @@ def validate_lint_dependency(
     )
     if sha256(manifest_path) != expected_manifest_sha:
         raise DependencyError("lint dependency manifest checksum does not match")
+    if allowed_signers_path.is_symlink() or not allowed_signers_path.is_file():
+        raise DependencyError("lint allowed-signers input must be a regular file")
     expected_signers_sha = require_sha256(
         dependency.get("allowed_signers_sha256"),
         "lint dependency allowed-signers checksum",
     )
-    if allowed_signers_path.is_symlink() or not allowed_signers_path.is_file():
-        raise DependencyError("lint allowed-signers input must be a regular file")
     if sha256(allowed_signers_path) != expected_signers_sha:
         raise DependencyError("lint allowed-signers checksum does not match")
     allowed_lines = allowed_signers_path.read_text(encoding="utf-8").splitlines()
     if len(allowed_lines) != 1:
         raise DependencyError("lint allowed-signers input must contain one signer")
-    if not allowed_lines[0].startswith(f"{signer} ssh-ed25519 "):
+    if not allowed_lines[0].startswith("trycopilotai-release ssh-ed25519 "):
         raise DependencyError("lint allowed-signers principal does not match")
 
 
@@ -1174,30 +1189,31 @@ def verify_lint_release(
     ).stdout.strip()
     if peeled_commit != dependency["commit"]:
         raise DependencyError("lint release tag does not point at the commit")
-    verification = subprocess.run(
-        [
-            str(trusted_git()),
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            f"gpg.ssh.program={trusted_ssh_keygen()}",
-            "-c",
-            f"gpg.ssh.allowedSignersFile={allowed_signers_path}",
-            "verify-tag",
-            tag_object,
-        ],
-        cwd=lint_root,
-        check=False,
-        env=isolated,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if verification.returncode != 0:
-        raise DependencyError("lint release tag signature is not trusted")
-    signature_output = verification.stdout + verification.stderr
-    if dependency["signer"] not in signature_output:
-        raise DependencyError("lint release signature principal does not match")
+    if dependency["schema"] == 2:
+        verification = subprocess.run(
+            [
+                str(trusted_git()),
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                f"gpg.ssh.program={trusted_ssh_keygen()}",
+                "-c",
+                f"gpg.ssh.allowedSignersFile={allowed_signers_path}",
+                "verify-tag",
+                tag_object,
+            ],
+            cwd=lint_root,
+            check=False,
+            env=isolated,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if verification.returncode != 0:
+            raise DependencyError("lint release tag signature is not trusted")
+        signature_output = verification.stdout + verification.stderr
+        if dependency["signer"] not in signature_output:
+            raise DependencyError("lint release signature principal does not match")
     verify_worktree_matches_commit(lint_root, dependency["commit"], isolated)
     temporary_directory: tempfile.TemporaryDirectory[str] | None = None
     if verified_root is None:
