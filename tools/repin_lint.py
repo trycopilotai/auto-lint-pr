@@ -177,9 +177,7 @@ def build_dependency(
         "tree": release["tree"],
     }
     if release["ref"] == "refs/tags/v0.1.9":
-        dependency.update(
-            {"schema": 3}
-        )
+        dependency.update({"schema": 3})
     else:
         dependency.update(
             {
