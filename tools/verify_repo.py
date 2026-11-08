@@ -282,9 +282,7 @@ def verify_lint_dependency() -> None:
         "tree": LINT_TREE,
     }
     if LINT_REF == "refs/tags/v0.1.9":
-        expected.update(
-            {"schema": 3}
-        )
+        expected.update({"schema": 3})
     else:
         expected.update(
             {
