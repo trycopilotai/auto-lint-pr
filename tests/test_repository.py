@@ -1080,16 +1080,22 @@ class LaunchWordingTest(unittest.TestCase):
 
 
 class LintReleasePinTest(unittest.TestCase):
-    """The pinned release is carried by LINT_REF alone."""
+    """The pin allows only the fixed v0.1.9 schema exception."""
 
-    def test_verifier_holds_no_second_release_literal(self) -> None:
+    def test_verifier_holds_no_unexpected_release_literal(self) -> None:
         source = (ROOT / "tools" / "verify_repo.py").read_text(encoding="utf-8")
         pinned = verify_repo.LINT_REF.rsplit("/", 1)[1].removeprefix("v")
-        # The version may appear once, as part of LINT_REF itself.
+        expected_occurrences = 1
+        if pinned == "0.1.9":
+            expected_occurrences = 2
+            self.assertEqual(
+                1,
+                source.count('if LINT_REF == "refs/tags/v0.1.9":'),
+            )
         self.assertEqual(
-            1,
+            expected_occurrences,
             source.count(pinned),
-            "the pinned release must appear only inside LINT_REF",
+            "the release may appear only in its pin and fixed exception",
         )
 
     def test_manifest_release_must_agree_with_the_ref(self) -> None:

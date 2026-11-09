@@ -265,6 +265,27 @@ class RepinLintTest(unittest.TestCase):
         )
         self.assertEqual(3, dependency["schema"])
 
+    def test_v019_verifier_pin_keeps_the_unsigned_schema_branch(self) -> None:
+        release = {
+            "allowed_signers_sha256": "4" * 64,
+            "commit": "1" * 40,
+            "ref": "refs/tags/v0.1.9",
+            "tag_object": "2" * 40,
+            "tree": "3" * 40,
+        }
+
+        source = repin_lint.build_verify_repo_source("v0.1.9", release)
+
+        self.assertEqual(2, source.count("0.1.9"))
+        self.assertEqual(
+            1,
+            source.count('LINT_REF = "refs/tags/v0.1.9"'),
+        )
+        self.assertEqual(
+            1,
+            source.count('if LINT_REF == "refs/tags/v0.1.9":'),
+        )
+
     def test_other_release_dependency_keeps_signed_schema(self) -> None:
         release = {
             "commit": "1" * 40,
