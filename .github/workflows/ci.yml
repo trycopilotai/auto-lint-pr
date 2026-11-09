@@ -87,7 +87,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: trycopilotai/lint
-          ref: refs/tags/v0.1.8
+          ref: refs/tags/v0.1.9
           fetch-depth: 0
           token:
             "${{ secrets.checkout_token || github.token }}"
@@ -193,13 +193,13 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           repository: trycopilotai/lint
-          ref: refs/tags/v0.1.8
+          ref: refs/tags/v0.1.9
           fetch-depth: 0
           token:
             "${{ secrets.checkout_token || github.token }}"
           persist-credentials: false
           path: lint
-      - name: Resolve exact signed image reference
+      - name: Resolve exact immutable image reference
         env:
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           ACTIONS_RUNTIME_TOKEN: ""
