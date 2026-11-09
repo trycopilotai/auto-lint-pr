@@ -208,12 +208,21 @@ def build_verify_repo_source(tag: str, release: dict[str, str]) -> str:
         ),
     )
     for old, new, name in replacements:
+        if name == "LINT_REF":
+            old = f'LINT_REF = "{old}"'
+            new = f'LINT_REF = "{new}"'
         source = replace_counted(source, old, new, 1, f"tools/verify_repo.py {name}")
     version = tag.removeprefix("v")
     occurrences = source.count(version)
-    if occurrences != 1:
+    expected_occurrences = 1
+    if tag == "v0.1.9":
+        # The verifier has one release-specific schema-3 branch for
+        # this unsigned release in addition to the pinned-ref constant.
+        expected_occurrences = 2
+    if occurrences != expected_occurrences:
         raise RepinError(
-            "the pinned release version must appear exactly once in "
+            "the pinned release version must appear exactly "
+            f"{expected_occurrences} time(s) in "
             f"tools/verify_repo.py, found {occurrences} sites of {version!r}"
         )
     return source
